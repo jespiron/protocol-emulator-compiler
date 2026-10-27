@@ -1,0 +1,51 @@
+clock_hz = 50000000
+
+[[pins]]
+name = "tx"
+mode = "push_pull"
+pads = [6]
+source = "transmitter.out"
+
+[[pins]]
+name = "rx"
+mode = "input"
+pads = [7]
+
+[[timers]]
+name = "receive_clock"
+period_cycles = 64
+phase_cycles = 30
+pulse = true
+start = "rx.fall"
+stop = "receiver.stop"
+
+[[timers]]
+name = "transmit_clock"
+period_cycles = 64
+phase_cycles = 61
+pulse = true
+start = "transmitter.active"
+stop = "transmitter.stop"
+
+# Deliberately reversed: RX FIFO channel 0, TX FIFO channel 1.
+[[shifters]]
+name = "receiver"
+bits = 8
+pre = 1
+post = 1
+post_value = 1
+shift = "receive_clock.rise"
+sample = "receive_clock.rise"
+start = "rx.fall"
+source = "rx.level"
+push = true
+
+[[shifters]]
+name = "transmitter"
+bits = 8
+pre = 1
+post = 1
+post_value = 1
+idle = 1
+shift = "transmit_clock.rise"
+pull = true

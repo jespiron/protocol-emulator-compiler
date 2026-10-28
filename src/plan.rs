@@ -389,7 +389,10 @@ impl Planner<'_, '_> {
                     ));
                 }
             }
-            StmtKind::Wait(duration) => {
+            StmtKind::Wait {
+                signal: duration,
+                next: false,
+            } => {
                 json!({ "op": "wait", "cycles": self.design.env.cycles(duration)? })
             }
             _ => {

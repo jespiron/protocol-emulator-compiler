@@ -16,8 +16,9 @@ import inspect
 from peers.i2c import I2cTarget
 from peers.spi import SpiDevice
 from peers.uart import UartDevice
+from peers.usb import UsbHost
 
-KINDS = {"i2c_target": I2cTarget, "spi_device": SpiDevice, "uart_device": UartDevice}
+KINDS = {"i2c_target": I2cTarget, "spi_device": SpiDevice, "uart_device": UartDevice, "usb_host": UsbHost}
 
 
 def attach(spec, bus, dut):

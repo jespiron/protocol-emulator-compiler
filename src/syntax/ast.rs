@@ -26,14 +26,18 @@ pub(crate) enum Item {
         name: Name,
         fields: Vec<Field>,
     },
-    /// `reg selected init 1 = begin || selected`
+    /// `reg selected init 1 = begin || selected`; with `on bit.tick` it
+    /// updates only on that pulse instead of every cycle.
     Reg {
         name: Name,
         init: Option<Expr>,
+        on: Option<Expr>,
         value: Expr,
     },
     /// `event begin, finish`
     Event(Vec<Name>),
+    /// `flag sending, ending`: levels the controller sets.
+    Flag(Vec<Name>),
     /// `export stream send: host -> sender`
     Stream { name: Name, from: Expr, to: Expr },
     /// `export fn transfer(...) -> bytes { ... }` or a private `fn`.
@@ -80,7 +84,11 @@ pub(crate) struct Stmt {
 #[derive(Debug)]
 pub(crate) enum StmtKind {
     Fire(Name),
-    Wait(Expr),
+    /// `wait x`, or `wait next x` to ignore events that happened earlier.
+    Wait {
+        signal: Expr,
+        next: bool,
+    },
     Repeat {
         count: Expr,
         body: Vec<Stmt>,

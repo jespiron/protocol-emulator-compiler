@@ -19,6 +19,8 @@ pub(crate) enum Kind {
     Counter,
     Reg,
     Event,
+    Flag,
+    Crc,
 }
 
 impl Kind {
@@ -30,6 +32,8 @@ impl Kind {
             Kind::Counter => "counter",
             Kind::Reg => "reg",
             Kind::Event => "event",
+            Kind::Flag => "flag",
+            Kind::Crc => "crc",
         }
     }
 
@@ -40,7 +44,8 @@ impl Kind {
             Kind::Timer => "`.tick`/`.rise`, `.fall` (pulses) or `.out` (level)",
             Kind::Shifter => "`.word`, `.done` (pulses), `.out` or `.busy` (levels)",
             Kind::Counter => "`.reached` (pulse) or `.at_least` (level)",
-            Kind::Reg | Kind::Event => "its name",
+            Kind::Crc => "`.out` (its next check bit) or `.ok` (the check matches), both levels",
+            Kind::Reg | Kind::Event | Kind::Flag => "its name",
         }
     }
 
@@ -52,6 +57,8 @@ impl Kind {
             Kind::Counter => (hardware::COUNTERS, "counters"),
             Kind::Reg => (hardware::LOGIC_CELLS, "logic cells (`reg`s)"),
             Kind::Event => (hardware::EVENTS, "events"),
+            Kind::Flag => (hardware::FLAGS, "flags"),
+            Kind::Crc => (hardware::CRCS, "crc"),
         }
     }
 }
@@ -110,6 +117,8 @@ pub(crate) struct Chip<'a> {
     pub pads: Vec<usize>,
     pub fifos: Vec<Fifo>,
     pub tiles: HashMap<String, &'a [Field]>,
+    /// Each pin's declaration, so a program can release a pin and drive it again.
+    pub pin_decls: HashMap<String, (&'a Name, &'a Name, Option<&'a Expr>)>,
 }
 
 pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
@@ -129,9 +138,10 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
         pads: Vec::new(),
         fifos: vec![Fifo::default(); hardware::SHIFTERS],
         tiles: HashMap::new(),
+        pin_decls: HashMap::new(),
     };
     let mut names: HashMap<String, Span> = HashMap::new();
-    let mut counts = [0usize; 6];
+    let mut counts = [0usize; 8];
     let mut pins = Vec::new();
     let mut tests = Vec::new();
     let mut invariants = Vec::new();
@@ -169,8 +179,15 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
                 let value = chip.env.eval(value)?;
                 chip.env.consts.insert(name.text.clone(), value);
             }
-            Item::Pin { name, pads, .. } => {
+            Item::Pin {
+                name,
+                pads,
+                mode,
+                source,
+            } => {
                 declare(name, Some(Kind::Pin), &mut chip)?;
+                chip.pin_decls
+                    .insert(name.text.clone(), (name, mode, source.as_ref()));
                 let allowed = match pads {
                     None => (0..hardware::PADS).collect(),
                     Some(list) => list
@@ -184,15 +201,21 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
                 let kind = match kind.text.as_str() {
                     "timer" => Kind::Timer,
                     "shifter" => Kind::Shifter,
-                    _ => Kind::Counter,
+                    "counter" => Kind::Counter,
+                    _ => Kind::Crc,
                 };
                 declare(name, Some(kind), &mut chip)?;
                 chip.tiles.insert(name.text.clone(), fields);
             }
             Item::Reg { name, .. } => declare(name, Some(Kind::Reg), &mut chip)?,
-            Item::Event(list) => {
+            Item::Event(list) | Item::Flag(list) => {
+                let kind = if matches!(item, Item::Event(_)) {
+                    Kind::Event
+                } else {
+                    Kind::Flag
+                };
                 for name in list {
-                    declare(name, Some(Kind::Event), &mut chip)?;
+                    declare(name, Some(kind), &mut chip)?;
                 }
             }
             Item::Stream { name, .. } | Item::Fn { name, .. } => declare(name, None, &mut chip)?,
@@ -224,7 +247,12 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
                 let fields: Vec<&Field> = fields.iter().collect();
                 chip.tile(name, &fields)?
             }
-            Item::Reg { name, init, value } => chip.reg(name, init.as_ref(), value)?,
+            Item::Reg {
+                name,
+                init,
+                on,
+                value,
+            } => chip.reg(name, init.as_ref(), on.as_ref(), value)?,
             _ => Vec::new(),
         };
         for (address, value) in writes {
@@ -246,8 +274,10 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
         Kind::Timer,
         Kind::Shifter,
         Kind::Counter,
+        Kind::Crc,
         Kind::Reg,
         Kind::Event,
+        Kind::Flag,
     ];
     let mut usage: Vec<_> = kinds
         .iter()
@@ -395,6 +425,7 @@ impl Chip<'_> {
                     Kind::Pin => Ok(Line::pin_level(self.pads[decl.index])),
                     Kind::Reg => Ok(Line::logic(decl.index)),
                     Kind::Event => Ok(Line::fire(decl.index)),
+                    Kind::Flag => Ok(Line::flag(decl.index)),
                     kind => Err(Error::new(
                         expr.span,
                         format!(
@@ -420,6 +451,8 @@ impl Chip<'_> {
                     (Kind::Shifter, "busy") => Line::shifter_active(k),
                     (Kind::Counter, "reached") => Line::counter_reached(k),
                     (Kind::Counter, "at_least") => Line::counter_at_least(k),
+                    (Kind::Crc, "out") => Line::CRC_OUT,
+                    (Kind::Crc, "ok") => Line::CRC_OK,
                     (kind, _) => {
                         return Err(Error::new(
                             field.span,
@@ -554,6 +587,7 @@ impl Chip<'_> {
             Kind::Timer => self.timer(name, decl.index, list),
             Kind::Shifter => self.shifter(name, decl.index, list),
             Kind::Counter => self.counter(name, decl.index, list),
+            Kind::Crc => self.crc(name, list),
             kind => Err(Error::new(
                 name.span,
                 format!("a {} has no settings to change", kind.noun()),
@@ -811,10 +845,36 @@ impl Chip<'_> {
     }
 
     fn counter(&self, name: &Name, k: usize, list: &[&Field]) -> Result<Vec<(u8, u16)>> {
-        let f = fields(list, &["count", "limit", "clear"], "counter")?;
+        let f = fields(list, &["count", "streak", "limit", "clear"], "counter")?;
         let step = match f.get("count") {
             Some(c) => self.signal(value(c)?)?,
             None => return Err(Error::new(name.span, "a counter needs `count: <signal>`")),
+        };
+        // `streak: ones(x)` counts the current run of equal bits instead of every step.
+        let (mode, data) = match f.get("streak") {
+            None => (0, 0),
+            Some(streak) => {
+                let expr = value(streak)?;
+                let wrong = || {
+                    Error::new(
+                        expr.span,
+                        "expected `ones(signal)`, `zeros(signal)` or `equal(signal)`",
+                    )
+                };
+                let ExprKind::Call(kind, args) = &expr.kind else {
+                    return Err(wrong());
+                };
+                let (ExprKind::Name(kind), [arg]) = (&kind.kind, args.as_slice()) else {
+                    return Err(wrong());
+                };
+                let mode = match kind.as_str() {
+                    "ones" => 1,
+                    "zeros" => 2,
+                    "equal" => 3,
+                    _ => return Err(wrong()),
+                };
+                (mode, self.level(&arg.value)?.level_select())
+            }
         };
         let limit = match f.get("limit") {
             Some(l) => {
@@ -831,15 +891,115 @@ impl Chip<'_> {
         Ok(vec![
             (config::counter(k, 0), limit),
             (config::counter(k, 2), u16::from(clear.0)),
-            (config::counter(k, 1), u16::from(step.0)),
+            (
+                config::counter(k, 1),
+                u16::from(step.0) | data << 6 | mode << 11,
+            ),
         ])
     }
 
-    fn reg(&self, name: &Name, init: Option<&Expr>, expr: &Expr) -> Result<Vec<(u8, u16)>> {
+    /// A CRC register fed bit by bit: `absorb` steps it with `data`, `emit`
+    /// shifts its complemented check bits out on `.out`, and `.ok` compares
+    /// it with `check`. `restart` reloads it; `start: zeros` starts it at 0.
+    fn crc(&self, name: &Name, list: &[&Field]) -> Result<Vec<(u8, u16)>> {
+        let f = fields(
+            list,
+            &[
+                "width",
+                "poly",
+                "check",
+                "absorb",
+                "data",
+                "emit",
+                "restart",
+                "start",
+                "absorb_while",
+                "emit_while",
+            ],
+            "crc",
+        )?;
+        let number = |field: &str, high: i128| -> Result<i128> {
+            let f = f
+                .get(field)
+                .ok_or_else(|| Error::new(name.span, format!("a crc needs `{field}`")))?;
+            let expr = value(f)?;
+            let n = self.env.integer(expr)?;
+            if !(0..=high).contains(&n) {
+                return Err(Error::new(
+                    expr.span,
+                    format!("`{field}` is {n}; it must be between 0 and {high}"),
+                ));
+            }
+            Ok(n)
+        };
+        let width = number("width", hardware::MAX_CRC_BITS)?;
+        if width == 0 {
+            return Err(Error::new(name.span, "a crc is at least 1 bit wide"));
+        }
+        let poly = number("poly", (1i128 << width) - 1)?;
+        let check = number("check", (1i128 << width) - 1)?;
+        let line = |field: &str| -> Result<Line> {
+            f.get(field)
+                .map(|e| self.signal(value(e)?))
+                .transpose()
+                .map(|l| l.unwrap_or(Line::ZERO))
+        };
+        let absorb = line("absorb")?;
+        let emit = line("emit")?;
+        let restart = f
+            .get("restart")
+            .map(|e| self.pulse(value(e)?))
+            .transpose()?
+            .unwrap_or(Line::ZERO);
+        let data = match f.get("data") {
+            Some(d) => self.level(value(d)?)?.level_select(),
+            None => 0,
+        };
+        let ones = match f
+            .get("start")
+            .map(|s| value(s))
+            .transpose()?
+            .map(|e| &e.kind)
+        {
+            None => 1,
+            Some(ExprKind::Name(n)) if n == "ones" => 1,
+            Some(ExprKind::Name(n)) if n == "zeros" => 0,
+            Some(_) => return Err(Error::new(name.span, "`start` is `ones` or `zeros`")),
+        };
+        let mut gates = 0;
+        if let Some(g) = f.get("absorb_while") {
+            gates |= self.level(value(g)?)?.level_select() | 1 << 5;
+        }
+        if let Some(g) = f.get("emit_while") {
+            gates |= self.level(value(g)?)?.level_select() << 6 | 1 << 11;
+        }
+        Ok(vec![
+            (config::crc(0), poly as u16),
+            (config::crc(1), (poly >> 16) as u16),
+            (config::crc(2), check as u16),
+            (config::crc(3), (check >> 16) as u16),
+            (config::crc(6), (width - 1) as u16 | ones << 5),
+            (
+                config::crc(5),
+                u16::from(emit.0) | u16::from(restart.0) << 6,
+            ),
+            (config::crc(4), u16::from(absorb.0) | data << 6),
+            (config::crc(7), gates),
+        ])
+    }
+
+    fn reg(
+        &self,
+        name: &Name,
+        init: Option<&Expr>,
+        on: Option<&Expr>,
+        expr: &Expr,
+    ) -> Result<Vec<(u8, u16)>> {
         let k = self.decls[&name.text].index;
         let formula = Formula::from_expr(expr, &|e| self.signal(e))?;
         let cell = logic::synthesize(&formula, expr.span)?;
         let init = init.map(|i| self.bit(i)).transpose()?.unwrap_or(0);
+        let on = on.map(|e| self.pulse(e)).transpose()?.unwrap_or(Line::ONE);
         let [a, b, c, d] = cell.inputs;
         Ok(vec![
             (config::logic(k, 0), cell.table),
@@ -848,7 +1008,7 @@ impl Chip<'_> {
                 config::logic(k, 2),
                 c.level_select() | d.level_select() << 5,
             ),
-            (config::logic(k, 3), u16::from(Line::ONE.0) | init << 5),
+            (config::logic(k, 3), u16::from(on.0) | init << 5),
         ])
     }
 

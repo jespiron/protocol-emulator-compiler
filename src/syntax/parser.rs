@@ -152,7 +152,7 @@ impl Parser {
                     source,
                 }
             }
-            "timer" | "shifter" | "counter" => Item::Tile {
+            "timer" | "shifter" | "counter" | "crc" => Item::Tile {
                 kind: keyword,
                 name: self.name()?,
                 fields: self.fields()?,
@@ -164,19 +164,29 @@ impl Parser {
                 } else {
                     None
                 };
+                let on = if self.eat("on") {
+                    Some(self.binary(1)?)
+                } else {
+                    None
+                };
                 self.expect("=")?;
                 Item::Reg {
                     name,
                     init,
+                    on,
                     value: self.expr()?,
                 }
             }
-            "event" => {
+            "event" | "flag" => {
                 let mut names = vec![self.name()?];
                 while self.eat(",") {
                     names.push(self.name()?);
                 }
-                Item::Event(names)
+                if keyword.text == "event" {
+                    Item::Event(names)
+                } else {
+                    Item::Flag(names)
+                }
             }
             "export" if self.eat("stream") => {
                 let name = self.name()?;
@@ -206,8 +216,8 @@ impl Parser {
                 return Err(Error::new(
                     keyword.span,
                     format!(
-                        "expected a declaration (clock, const, pin, timer, shifter, counter, \
-                         reg, event, fn, export, test or always), found `{}`",
+                        "expected a declaration (clock, const, pin, timer, shifter, counter, crc, \
+                         reg, event, flag, fn, export, test or always), found `{}`",
                         keyword.text
                     ),
                 ));
@@ -312,7 +322,15 @@ impl Parser {
             }
             "wait" if is_keyword => {
                 self.bump();
-                StmtKind::Wait(self.expr()?)
+                let next = matches!(self.peek(), Kind::Ident(n) if n == "next")
+                    && matches!(self.peek_at(1), Kind::Ident(_));
+                if next {
+                    self.bump();
+                }
+                StmtKind::Wait {
+                    signal: self.expr()?,
+                    next,
+                }
             }
             "repeat" if is_keyword => {
                 self.bump();

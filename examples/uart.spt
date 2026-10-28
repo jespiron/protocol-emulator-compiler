@@ -27,3 +27,19 @@ shifter receiver {
 
 export stream send: host -> sender
 export stream recv: receiver -> host
+
+// ─── tests ───────────────────────────────────────────────
+
+test "loopback" {
+    wire tx -> rx
+    send.write([0x55, 0xA3, 0x00])
+    expect recv.read(3) == [0x55, 0xA3, 0x00]
+}
+
+test "talks to a terminal" {
+    attach uart_device(from_chip: tx, to_chip: rx, bit: BIT) as terminal
+    send.write("hi")
+    expect terminal.read(2) == "hi"
+    terminal.write("ok")
+    expect recv.read(2) == "ok"
+}

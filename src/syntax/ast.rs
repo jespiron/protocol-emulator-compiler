@@ -34,6 +34,8 @@ pub(crate) enum Item {
     },
     /// `export stream send: host -> sender`
     Stream { name: Name, from: Expr, to: Expr },
+    /// `test "loopback" { ... }`
+    Test { name: Name, body: Vec<Stmt> },
 }
 
 /// `name: value`, or a bare flag such as `pulse`.
@@ -41,6 +43,28 @@ pub(crate) enum Item {
 pub(crate) struct Field {
     pub name: Name,
     pub value: Option<Expr>,
+}
+
+#[derive(Debug)]
+pub(crate) struct Stmt {
+    pub kind: StmtKind,
+    pub span: Span,
+}
+
+#[derive(Debug)]
+pub(crate) enum StmtKind {
+    Wait(Expr),
+    /// `expect a == b`
+    Expect(Expr),
+    Attach {
+        peer: Expr,
+        alias: Option<Name>,
+    },
+    Wire {
+        from: Expr,
+        to: Expr,
+    },
+    Expr(Expr),
 }
 
 #[derive(Clone, Debug)]
@@ -66,5 +90,6 @@ pub(crate) enum ExprKind {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Arg {
+    pub name: Option<Name>,
     pub value: Expr,
 }

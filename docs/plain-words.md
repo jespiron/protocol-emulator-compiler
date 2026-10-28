@@ -68,7 +68,7 @@ PLANNED for future is ability for compiler to have more granular way of keeping 
 **You connect a wire to a nonexistent field.** Like `source = "missing.out"` fails because no worker
 named `missing` exists.
 
-**You try to load data in a module that does not match its width.** Suppose a shifter can hold up to 16 bits, but its automatic FIFO path only carries eight bits. This fails:
+**You try to load data in a module that does not match its width.** Suppose a shifter can hold up to 16 bits, but its automatic FIFO path only carries eight bits. The compiler will reject the following:
 
 ```toml
 [[shifters]]
@@ -77,7 +77,7 @@ bits = 16
 pull = true
 ```
 
-This fits the register path instead:
+Meanwhile, this will be accepted by the compiler:
 
 ```toml
 [[shifters]]
@@ -86,29 +86,11 @@ bits = 16
 value = 65535
 ```
 
-That second example only configures a word. It still needs start/shift signals
-and an output pin to transmit anything. “Fits” does not mean “does useful work.”
-
 **You ask for half a clock tick.** At 50 MHz, each clock tick is 20 ns.
 `period_ns = 1280` becomes exactly 64 clocks. `period_ns = 21` is rejected.
-We do not quietly round it. The compiler does not prove that the real chip can
+We do not round it, and the compiler does not prove that the chip can
 run at every clock frequency you write down.
 
-**Your backpack exceeds 1024 bytes.** Startup instructions, configuration values,
-and optional `data = [...]` all live in the same 1 KiB SRAM. The compiler counts
-the final encoded bytes, not an estimate. Those optional data bytes just sit in
-memory; they do not automatically become bytes to transmit.
-
-## What we have not proved
-
-The compiler can say “the worker count fits and the connections can be encoded.”
-It cannot yet say “your USB handshake happens before its deadline,” “your host
-reads fast enough to prevent overflow,” or “this design obeys every protocol
-rule.” Those need scheduling/lifetime constraints and independent wire tests.
-LUTs, CRC blocks, counters, context switching and arbitrary controller programs
-exist in the hardware but are not exposed by this first language version.
-
-Separately, the USB work fixed a packet receiver that said “good packet” after
-losing bytes when its output buffer filled. We also wrote a reference model for
-transaction rules such as retries and duplicate suppression. That model is a
-specimen to compare against, not a USB transaction engine running on the chip.
+**Your requested SRAM exceeds 1024 bytes.** Startup instructions, configuration values,
+and optional `data = [...]` all occupy the same 1 KiB SRAM. The compiler counts
+the final encoded bytes, not an estimate.

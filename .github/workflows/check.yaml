@@ -10,9 +10,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: astral-sh/setup-uv@v6
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked --doc
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps
-      - name: The examples compile
-        run: for example in examples/*.spt; do cargo run --locked -q -- check "$example"; done
+      - uses: YosysHQ/setup-oss-cad-suite@v4
+        with:
+          version: '2026-10-26'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run every example's tests on the RTL
+        run: |
+          cargo build --locked
+          for example in examples/*.spt; do target/debug/spatial run --test "$example"; done
+      - name: A new project works from an installed binary
+        run: |
+          cargo install --locked --path . --root /tmp/spatial
+          cd /tmp && /tmp/spatial/bin/spatial new hello && cd hello && /tmp/spatial/bin/spatial run --test

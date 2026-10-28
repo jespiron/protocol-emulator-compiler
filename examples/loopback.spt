@@ -25,3 +25,11 @@ shifter receiver {
 
 export stream send: host -> sender
 export stream recv: receiver -> host
+
+// ─── tests ───────────────────────────────────────────────
+
+test "bytes come back" {
+    wire out_wire -> in_wire
+    send.write("hello")
+    expect recv.read(5) == "hello"
+}

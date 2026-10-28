@@ -22,6 +22,7 @@ mod diagnostic;
 mod elaborate;
 mod hardware;
 mod logic;
+mod plan;
 mod px8;
 mod syntax;
 mod value;
@@ -41,6 +42,10 @@ pub struct Build {
     pub pins: BTreeMap<String, usize>,
     /// Hardware used, as `(name, used, available)`.
     pub usage: Vec<(&'static str, usize, usize)>,
+    /// Names of the program's tests, in source order.
+    pub tests: Vec<String>,
+    /// Everything the simulator needs to run the tests, as JSON.
+    pub plan: serde_json::Value,
 }
 
 /// Parse, check and compile a program.
@@ -50,9 +55,16 @@ pub struct Build {
 pub fn compile(source: &str) -> Result<Build, Error> {
     let items = syntax::parse(source)?;
     let design = elaborate::elaborate(&items)?;
+    let plan = plan::plan(&design, source)?;
     Ok(Build {
+        tests: design
+            .tests
+            .iter()
+            .map(|(name, _)| name.text.clone())
+            .collect(),
         usage: design.usage,
         pins: design.pins,
         image: design.image,
+        plan,
     })
 }

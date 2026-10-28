@@ -4,7 +4,7 @@ use crate::diagnostic::{Error, Result, Span};
 use crate::hardware::{self, Line, PinMode, config};
 use crate::logic::{self, Formula};
 use crate::px8::Assembler;
-use crate::syntax::ast::{Expr, ExprKind, Field, Item, Name};
+use crate::syntax::ast::{Expr, ExprKind, Field, Item, Name, Stmt};
 use crate::value::{Env, Value};
 use std::collections::{BTreeMap, HashMap};
 
@@ -68,6 +68,12 @@ pub(crate) enum Direction {
     FromChip,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct Stream {
+    pub channel: usize,
+    pub direction: Direction,
+}
+
 /// A shifter's FIFO connections to the host.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Fifo {
@@ -78,11 +84,16 @@ pub(crate) struct Fifo {
 }
 
 /// The elaborated program.
-pub(crate) struct Design {
+pub(crate) struct Design<'a> {
+    pub clock_hz: i128,
+    /// Constants, for evaluating test values.
+    pub env: Env,
     pub image: Vec<u8>,
     /// Pin name to physical `uio` pad.
     pub pins: BTreeMap<String, usize>,
+    pub streams: BTreeMap<String, Stream>,
     pub usage: Vec<(&'static str, usize, usize)>,
+    pub tests: Vec<(&'a Name, &'a [Stmt])>,
 }
 
 /// Names and hardware assignments.
@@ -93,7 +104,7 @@ pub(crate) struct Chip {
     pub fifos: Vec<Fifo>,
 }
 
-pub(crate) fn elaborate(items: &[Item]) -> Result<Design> {
+pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
     let clock_hz = match items.iter().find_map(|item| match item {
         Item::Clock(expr) => Some(expr),
         _ => None,
@@ -113,6 +124,7 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design> {
     let mut names: HashMap<String, Span> = HashMap::new();
     let mut counts = [0usize; 6];
     let mut pins = Vec::new();
+    let mut tests = Vec::new();
     let mut declare = |name: &Name, kind: Option<Kind>, chip: &mut Chip| {
         if names.insert(name.text.clone(), name.span).is_some() {
             return Err(Error::new(
@@ -168,13 +180,15 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design> {
             }
             Item::Reg { name, .. } => declare(name, Some(Kind::Reg), &mut chip)?,
             Item::Stream { name, .. } => declare(name, None, &mut chip)?,
+            Item::Test { name, body } => tests.push((name, body.as_slice())),
         }
     }
     chip.pads = assign_pads(&pins)?;
 
+    let mut streams = BTreeMap::new();
     for item in items {
         if let Item::Stream { name, from, to } = item {
-            chip.stream(name, from, to)?;
+            streams.insert(name.text.clone(), chip.stream(name, from, to)?);
         }
     }
 
@@ -224,7 +238,15 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design> {
         })
         .collect();
     usage.push(("sram", image.len(), hardware::SRAM_BYTES));
-    Ok(Design { image, pins, usage })
+    Ok(Design {
+        clock_hz,
+        env: chip.env,
+        image,
+        pins,
+        streams,
+        usage,
+        tests,
+    })
 }
 
 fn clock(expr: &Expr) -> Result<i128> {
@@ -837,7 +859,7 @@ impl Chip {
         Ok(())
     }
 
-    fn stream(&mut self, name: &Name, from: &Expr, to: &Expr) -> Result<()> {
+    fn stream(&mut self, name: &Name, from: &Expr, to: &Expr) -> Result<Stream> {
         let is_host = |e: &Expr| matches!(&e.kind, ExprKind::Name(n) if n == "host");
         let (shifter, direction) = match (is_host(from), is_host(to)) {
             (true, false) => (to, Direction::ToChip),
@@ -850,6 +872,7 @@ impl Chip {
             }
         };
         let channel = self.shifter_index(shifter)?;
-        self.claim(channel, direction, name.span)
+        self.claim(channel, direction, name.span)?;
+        Ok(Stream { channel, direction })
     }
 }

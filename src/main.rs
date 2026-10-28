@@ -1,5 +1,6 @@
-//! The `spatial` command: create, check and build programs.
+//! The `spatial` command: create, check, build and test programs.
 mod project;
+mod simulator;
 
 use clap::{Parser, Subcommand};
 use project::Project;
@@ -8,7 +9,10 @@ use std::{fs, path::PathBuf};
 type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Parser)]
-#[command(version, about = "Compile programs for the spatial protocol chip")]
+#[command(
+    version,
+    about = "Compile and test programs for the spatial protocol chip"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -22,6 +26,13 @@ enum Command {
     Check { file: Option<PathBuf> },
     /// Compile into `target/image.bin`.
     Build { file: Option<PathBuf> },
+    /// Build, then run the program's tests in RTL simulation.
+    Run {
+        /// Run the tests; `--test=NAME` runs only that one.
+        #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "")]
+        test: Option<String>,
+        file: Option<PathBuf>,
+    },
 }
 
 /// Compile and print the hardware summary.
@@ -48,12 +59,12 @@ fn build(project: &Project) -> AppResult<spatial::Build> {
     Ok(build)
 }
 
-fn run() -> AppResult<()> {
+fn run() -> AppResult<bool> {
     match Cli::parse().command {
         Command::New { name } => {
             project::new(&name)?;
             println!(
-                "Created {}/{}\n\n  cd {}\n  spatial build",
+                "Created {}/{}\n\n  cd {}\n  spatial run --test",
                 name.display(),
                 project::SOURCE,
                 name.display()
@@ -70,13 +81,57 @@ fn run() -> AppResult<()> {
             fs::write(&image, &build.image)?;
             println!("  wrote  {}", image.display());
         }
+        Command::Run { test: None, .. } => {
+            return Err(
+                "the interactive console is not built yet; run the tests with `spatial run --test`"
+                    .into(),
+            );
+        }
+        Command::Run {
+            test: Some(only),
+            file,
+        } => {
+            let project = Project::find(file.as_deref())?;
+            let build = build(&project)?;
+            let only = Some(only.as_str()).filter(|name| !name.is_empty());
+            if let Some(name) = only.filter(|name| !build.tests.iter().any(|t| t == name)) {
+                return Err(format!(
+                    "no test named \"{name}\"; tests: {}",
+                    build.tests.join(", ")
+                )
+                .into());
+            }
+            if build.tests.is_empty() {
+                return Err("this program has no tests; add `test \"name\" { ... }`".into());
+            }
+            let outcomes = simulator::run(&project.target(), &build.plan, only)?;
+            let micros =
+                |cycles: u64| cycles as f64 * 1e6 / build.plan["clock_hz"].as_f64().unwrap_or(1.0);
+            for outcome in &outcomes {
+                match &outcome.error {
+                    None => println!("  ✓ {}   {:.1} us", outcome.name, micros(outcome.cycles)),
+                    Some(error) => println!(
+                        "  ✗ {}\n      {}:{}: {}",
+                        outcome.name,
+                        project.display_path(),
+                        error.line,
+                        error.message
+                    ),
+                }
+            }
+            return Ok(outcomes.iter().all(|o| o.error.is_none()));
+        }
     }
-    Ok(())
+    Ok(true)
 }
 
 fn main() {
-    if let Err(error) = run() {
-        eprintln!("error: {error}");
-        std::process::exit(1);
+    match run() {
+        Ok(true) => {}
+        Ok(false) => std::process::exit(1),
+        Err(error) => {
+            eprintln!("error: {error}");
+            std::process::exit(1);
+        }
     }
 }

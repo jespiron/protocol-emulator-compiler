@@ -1,5 +1,6 @@
 //! The `spatial` command: create, check, build and test programs.
 mod console;
+mod preview;
 mod project;
 mod simulator;
 
@@ -33,6 +34,12 @@ enum Command {
         #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "")]
         test: Option<String>,
         file: Option<PathBuf>,
+    },
+    /// Show the Klein bottle animation.
+    Preview {
+        /// Print one frame instead of animating.
+        #[arg(long)]
+        snapshot: bool,
     },
 }
 
@@ -104,7 +111,12 @@ fn run() -> AppResult<bool> {
             if build.tests.is_empty() {
                 return Err("this program has no tests; add `test \"name\" { ... }`".into());
             }
-            let outcomes = simulator::run(&project.target(), &build.plan, only)?;
+            let animation = preview::Animation::start("spatial run --test", "running on the RTL");
+            let outcomes = simulator::run(&project.target(), &build.plan, only, &|s| {
+                animation.status(s)
+            });
+            drop(animation);
+            let outcomes = outcomes?;
             let micros =
                 |cycles: u64| cycles as f64 * 1e6 / build.plan["clock_hz"].as_f64().unwrap_or(1.0);
             for outcome in &outcomes {
@@ -120,6 +132,13 @@ fn run() -> AppResult<bool> {
                 }
             }
             return Ok(outcomes.iter().all(|o| o.error.is_none()));
+        }
+        Command::Preview { snapshot } => {
+            if snapshot {
+                println!("{}", preview::snapshot());
+            } else {
+                preview::run()?;
+            }
         }
     }
     Ok(true)

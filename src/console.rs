@@ -5,6 +5,7 @@
 //! statements with the same checks and messages. The simulated chip keeps its
 //! state between lines, and its clock stands still while you type.
 use crate::AppResult;
+use crate::preview::Animation;
 use crate::project::Project;
 use crate::simulator::Console;
 use rustyline::{DefaultEditor, error::ReadlineError};
@@ -71,8 +72,10 @@ fn bytes(output: &Json) -> String {
 }
 
 pub(crate) fn run(project: &Project, build: &spatial::Build) -> AppResult<()> {
-    println!("  starting the simulated chip (the first run also builds it)");
-    let mut chip = Console::start(&project.target(), &build.plan)?;
+    let animation = Animation::start("spatial run", "starting the simulated chip");
+    let chip = Console::start(&project.target(), &build.plan, &|s| animation.status(s));
+    drop(animation);
+    let mut chip = chip?;
     let clock_hz = build.plan["clock_hz"].as_f64().unwrap_or(1.0);
     println!("  ready. This program offers:");
     for offer in offers(&build.plan) {

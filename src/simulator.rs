@@ -9,9 +9,9 @@ use serde_json::Value as Json;
 use spatial::HARDWARE_REVISION;
 use std::{
     fs::{self, File},
-    io::{BufRead, BufReader, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
-    process::{Child, Command},
+    process::{Child, ChildStdout, Command, Stdio},
     sync::mpsc,
     thread,
     time::Duration,
@@ -97,13 +97,63 @@ fn unfinished(target: &Path) -> String {
     )
 }
 
-/// Simulate the plan's tests (those named `only`, if given).
-pub(crate) fn run(target: &Path, plan: &Json, only: Option<&str>) -> AppResult<Vec<Outcome>> {
+/// Start the simulator with its progress lines and its errors captured, so
+/// that they never land in the middle of the animation.
+fn spawn(command: &mut Command) -> AppResult<(Child, mpsc::Receiver<String>)> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(no_uv)?;
+    let progress = progress(child.stdout.take().expect("piped"));
+    Ok((child, progress))
+}
+
+/// Progress lines, read on their own thread. Once nobody listens, they are
+/// printed instead.
+fn progress(stdout: ChildStdout) -> mpsc::Receiver<String> {
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            let line = line.trim().to_owned();
+            if let Err(mpsc::SendError(line)) = sender.send(line) {
+                println!("  {line}");
+            }
+        }
+    });
+    receiver
+}
+
+/// What the simulator said went wrong, or where to look if it said nothing.
+fn failure(target: &Path, child: &mut Child) -> String {
+    let mut errors = String::new();
+    if let Some(mut stderr) = child.stderr.take() {
+        let _ = stderr.read_to_string(&mut errors);
+    }
+    match errors.trim() {
+        "" => unfinished(target),
+        errors => errors.strip_prefix("error: ").unwrap_or(errors).to_owned(),
+    }
+}
+
+/// Simulate the plan's tests (those named `only`, if given), reporting the
+/// simulator's progress to `status`.
+pub(crate) fn run(
+    target: &Path,
+    plan: &Json,
+    only: Option<&str>,
+    status: &dyn Fn(&str),
+) -> AppResult<Vec<Outcome>> {
     let results = target.join("results.json");
     let _ = fs::remove_file(&results);
-    let status = simulation(target, plan, only)?.status().map_err(no_uv)?;
-    if !status.success() || !results.exists() {
-        return Err(unfinished(target).into());
+    let (mut child, progress) = spawn(&mut simulation(target, plan, only)?)?;
+    // The stderr pipe stays unread until the end; the simulator writes to it
+    // only just before it exits, far less than a pipe holds.
+    for line in progress {
+        status(&line);
+    }
+    if !child.wait()?.success() || !results.exists() {
+        return Err(failure(target, &mut child).into());
     }
     Ok(serde_json::from_slice(&fs::read(results)?)?)
 }
@@ -112,13 +162,15 @@ pub(crate) fn run(target: &Path, plan: &Json, only: Option<&str>) -> AppResult<V
 pub(crate) struct Console {
     target: PathBuf,
     child: Child,
+    errors: Option<thread::JoinHandle<()>>,
     requests: Option<File>,
     replies: BufReader<File>,
 }
 
 impl Console {
-    /// Start the simulation and wait until the chip is running.
-    pub(crate) fn start(target: &Path, plan: &Json) -> AppResult<Self> {
+    /// Start the simulation and wait until the chip is running, reporting the
+    /// simulator's progress to `status`.
+    pub(crate) fn start(target: &Path, plan: &Json, status: &dyn Fn(&str)) -> AppResult<Self> {
         let cache = cache()?;
         fs::create_dir_all(&cache)?;
         let id = std::process::id();
@@ -127,10 +179,8 @@ impl Console {
             cache.join(format!("console-{id}.replies")),
         ];
         let joined = std::env::join_paths(&paths)?;
-        let mut child = simulation(target, plan, None)?
-            .env("SPATIAL_CONSOLE", joined)
-            .spawn()
-            .map_err(no_uv)?;
+        let (mut child, progress) =
+            spawn(simulation(target, plan, None)?.env("SPATIAL_CONSOLE", joined))?;
         // Opening a pipe blocks until the simulator opens the other end, which
         // never happens if it fails to start; so open it on another thread.
         let (sender, receiver) = mpsc::channel();
@@ -146,16 +196,25 @@ impl Console {
             let _ = sender.send(opened);
         });
         let (requests, replies) = loop {
+            for line in progress.try_iter() {
+                status(&line);
+            }
             if let Ok(opened) = receiver.recv_timeout(Duration::from_millis(200)) {
                 break opened?;
             }
             if child.try_wait()?.is_some() {
-                return Err(unfinished(target).into());
+                return Err(failure(target, &mut child).into());
             }
         };
+        // From here on the simulator's errors go straight to the terminal.
+        let mut stderr = child.stderr.take().expect("piped");
+        let errors = thread::spawn(move || {
+            let _ = io::copy(&mut stderr, &mut io::stderr());
+        });
         let mut console = Self {
             target: target.to_owned(),
             child,
+            errors: Some(errors),
             requests: Some(requests),
             replies: BufReader::new(replies),
         };
@@ -185,5 +244,8 @@ impl Drop for Console {
     fn drop(&mut self) {
         self.requests = None;
         let _ = self.child.wait();
+        if let Some(errors) = self.errors.take() {
+            let _ = errors.join();
+        }
     }
 }

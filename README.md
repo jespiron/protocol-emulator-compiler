@@ -28,6 +28,7 @@ once into `~/.cache/spatial`.
 - [`examples/loopback.spt`](examples/loopback.spt): the starter project.
 - [`examples/uart.spt`](examples/uart.spt): full-duplex UART, tested against a terminal.
 - [`examples/spi.spt`](examples/spi.spt): an SPI controller with a host-callable `transfer`.
+- [`examples/i2c.spt`](examples/i2c.spt): an I2C controller with `write_read`, NACK reporting and clock stretching.
 
 The language reference is the crate documentation: `cargo doc --open`.
 

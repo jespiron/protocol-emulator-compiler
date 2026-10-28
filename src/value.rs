@@ -147,6 +147,14 @@ impl Env {
                     other => return Err(mismatch(span, "round", &other)),
                 }
             }
+            ExprKind::Call(callee, args)
+                if matches!(&callee.kind, ExprKind::Name(n) if n == "len") && args.len() == 1 =>
+            {
+                match self.eval(&args[0].value)? {
+                    Value::List(items) => Value::Number(Ratio::int(items.len() as i128)),
+                    other => return Err(mismatch(span, "take the length of", &other)),
+                }
+            }
             ExprKind::Unary("-", operand) => match self.eval(operand)? {
                 Value::Number(r) => Value::Number(r.neg()),
                 Value::Cycles(r) => Value::Cycles(r.neg()),

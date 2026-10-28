@@ -54,8 +54,9 @@ pub struct Error {
     pub label: Option<String>,
     /// Other source text that explains the error, such as where a value came from.
     pub related: Vec<Label>,
-    /// Extra facts, one line each.
-    pub notes: Vec<String>,
+    /// Lines under the source, in order: `note` for an extra fact, `help`
+    /// for advice in words when a fix is not a single edit.
+    pub asides: Vec<(&'static str, String)>,
     /// A suggested fix.
     pub help: Option<Box<Help>>,
 }
@@ -67,7 +68,7 @@ impl Error {
             message: message.into(),
             label: None,
             related: Vec::new(),
-            notes: Vec::new(),
+            asides: Vec::new(),
             help: None,
         }
     }
@@ -86,7 +87,12 @@ impl Error {
     }
 
     pub(crate) fn note(mut self, text: impl Into<String>) -> Self {
-        self.notes.push(text.into());
+        self.asides.push(("note", text.into()));
+        self
+    }
+
+    pub(crate) fn hint(mut self, text: impl Into<String>) -> Self {
+        self.asides.push(("help", text.into()));
         self
     }
 
@@ -189,15 +195,23 @@ impl Error {
                 paint(code, under.trim_end())
             )));
         }
-        if !self.notes.is_empty() {
+        if !self.asides.is_empty() {
             out.push(bar(""));
         }
-        for note in &self.notes {
+        // Later lines of a note line up under its first word.
+        let mut aside = |label: &str, text: &str| {
+            let indent = " ".repeat(gutter.len() + 5 + label.len());
+            let mut lines = text.lines();
             out.push(format!(
-                "{} {} {note}",
+                "{} {} {}",
                 blue(&format!("{gutter} =")),
-                paint("1", "note:")
+                paint("1", &format!("{label}:")),
+                lines.next().unwrap_or("")
             ));
+            out.extend(lines.map(|line| format!("{indent}{line}")));
+        };
+        for (label, text) in &self.asides {
+            aside(label, text);
         }
         if let Some(help) = &self.help {
             let start = Position::of(source, help.span.start);

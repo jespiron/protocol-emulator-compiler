@@ -1,6 +1,7 @@
 """Fetch the pinned RTL, build it with Verilator once, and run a test plan.
 
 Usage: run.py <target dir> <hardware revision> <test name or "">
+With SPATIAL_CONSOLE set to two pipe paths, the harness serves the console instead.
 
 The RTL checkout and the compiled simulator are cached per revision in
 ~/.cache/spatial, shared by every project. Upstream makefiles do not quote
@@ -53,6 +54,10 @@ def main():
         raise RuntimeError(f"the simulator cache path cannot contain spaces: {cache}")
     cache.mkdir(parents=True, exist_ok=True)
     check_tools()
+    # The console talks to the simulation through two named pipes.
+    for pipe in filter(None, os.environ.get("SPATIAL_CONSOLE", "").split(os.pathsep)):
+        Path(pipe).unlink(missing_ok=True)
+        os.mkfifo(pipe)
     with (target / "simulation.log").open("w") as log:
         rtl = hardware(cache, revision, log) / "test"
         env = dict(os.environ)

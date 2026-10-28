@@ -316,12 +316,19 @@ impl Planner<'_, '_> {
                         return Err(Error::new(expr.span, "`write` takes the bytes to send"));
                     };
                     json!({ "op": "write", "target": target, "bytes": self.bytes(&arg.value)? })
+                } else if let Some((target, args)) = self.endpoint(expr, "read")? {
+                    // A read without `expect` just shows what arrives (in the console).
+                    let [count] = args else {
+                        return Err(Error::new(expr.span, "`read` takes how many bytes to read"));
+                    };
+                    let count = self.design.env.integer(&count.value)?;
+                    json!({ "op": "read", "target": target, "count": count })
                 } else if let Some(call) = self.call(expr)? {
                     call
                 } else {
                     return Err(Error::new(
                         expr.span,
-                        "expected `<stream or peer>.write(...)` or a call to an exported function",
+                        "expected `<stream or peer>.write(...)`, `.read(n)`, or a call to an exported function",
                     ));
                 }
             }
@@ -375,7 +382,7 @@ impl Planner<'_, '_> {
                             ),
                         ));
                     }
-                    json!({ "op": "read", "target": target, "expect": expected })
+                    json!({ "op": "read", "target": target, "count": count, "expect": expected })
                 } else if let Some(mut call) = self.call(actual)? {
                     call["expect"] = json!(expected);
                     call

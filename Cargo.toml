@@ -1,0 +1,30 @@
+[package]
+name = "spatial-compiler"
+version = "0.2.0"
+edition = "2024"
+description = "Checked configuration compiler and RTL runner for the PX8 spatial fabric"
+default-run = "spatial"
+repository = "https://github.com/jespiron/protocol-emulator-compiler"
+include = ["/src/**/*.rs", "/assets/simulator/*.py", "/assets/simulator/pyproject.toml", "/assets/simulator/uv.lock", "/examples/*.toml", "/Spatial.toml", "/docs/*.md", "/README.md", "/Cargo.toml", "/Cargo.lock"]
+
+[[bin]]
+name = "spatial"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+crossterm = "0.29"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+
+[lints.clippy]
+all = "warn"

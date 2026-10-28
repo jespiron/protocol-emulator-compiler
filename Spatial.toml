@@ -1,0 +1,16 @@
+source = "examples/uart_full_duplex.toml"
+
+[simulation]
+cycles = 4096
+
+[[simulation.tx]]
+shifter = "transmitter"
+bytes = [85, 163, 0]
+
+[[simulation.loopback]]
+output = "tx"
+input = "rx"
+
+[[simulation.expect_rx]]
+shifter = "receiver"
+bytes = [85, 163, 0]

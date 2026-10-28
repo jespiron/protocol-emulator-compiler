@@ -7,18 +7,22 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.12'
-      - run: uv sync --locked
       - run: make check
-      - uses: actions/checkout@v4
-        with:
-          repository: WilliamZhang20/protocol-emulator
-          ref: 58da19f41c4fc91d68bd052c0105c45efbcef8ee
-          path: build/hardware
       - uses: YosysHQ/setup-oss-cad-suite@v4
         with:
           version: '2026-10-26'
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - run: make rtl-test HW_ROOT=${{ github.workspace }}/build/hardware
+      - run: make rtl-test
+      - name: Exercise installed binary outside checkout, including spaces
+        run: |
+          cargo install --locked --path . --root /tmp/spatial-install
+          cd /tmp
+          /tmp/spatial-install/bin/spatial new 'spatial example'
+          cd 'spatial example'
+          /tmp/spatial-install/bin/spatial run

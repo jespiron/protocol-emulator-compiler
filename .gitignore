@@ -47,3 +47,6 @@ venv/
 .pytest_cache/
 *.egg-info/
 dist/
+
+# Rust and spatial project outputs
+/target/

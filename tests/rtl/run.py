@@ -1,14 +1,13 @@
 """Run compiler differential and black-box RTL tests against a pinned hardware checkout."""
 
+import json
 import os
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from spatial_compiler import compile_program, parse
-from spatial_compiler.cli import main
-from spatial_compiler.model import HARDWARE_REVISION
+HARDWARE_REVISION = "58da19f41c4fc91d68bd052c0105c45efbcef8ee"
 
 root = Path(__file__).resolve().parents[2]
 hardware = Path(sys.argv[1]).resolve()
@@ -26,15 +25,18 @@ for example in ("uart_tx", "uart_full_duplex"):
     folder = root / "build" / example
     folder.mkdir(parents=True, exist_ok=True)
     source = root / "examples" / f"{example}.toml"
-    result = compile_program(parse(source.read_text()))
+    subprocess.run([str(root / "target/debug/spatial"), "build", str(source)], cwd=root, check=True)
+    artifacts = root / "target/spatial/artifacts"
+    manifest = json.loads((artifacts / "report.json").read_text())
+    compiled_image = (artifacts / "image.bin").read_bytes()
     reference = Px8()
-    for address, value in result.config:
+    for address, value in manifest["config"]:
         reference.cfg(address, value)
     reference.idle_forever()
-    assert bytes(reference.assemble()) == result.image, "legacy assembler differs"
+    assert bytes(reference.assemble()) == compiled_image, "legacy assembler differs"
     image, report = folder / "image.bin", folder / "report.json"
-    if main([str(source), "-o", str(image), "--report", str(report)]):
-        raise SystemExit("compilation failed")
+    image.write_bytes(compiled_image)
+    report.write_text(json.dumps(manifest))
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(
         (str(root / "tests/rtl"), str(hardware / "test"), str(root / "src"))
@@ -42,6 +44,7 @@ for example in ("uart_tx", "uart_full_duplex"):
     env["COMPILER_IMAGE"], env["COMPILER_REPORT"] = str(image), str(report)
     results = folder / "results.xml"
     env["COCOTB_RESULTS_FILE"] = str(results)
+    results.unlink(missing_ok=True)
     # Build/results are external to hardware checkout; pin-level harness only.
     subprocess.run(
         [

@@ -1,0 +1,25 @@
+clock_hz = 50000000
+
+[[pins]]
+name = "tx"
+mode = "push_pull"
+pads = [1]
+source = "serial.out"
+
+[[timers]]
+name = "baud"
+period_cycles = 64
+phase_cycles = 61
+pulse = true
+start = "serial.active"
+stop = "serial.stop"
+
+[[shifters]]
+name = "serial"
+bits = 8
+pre = 1
+post = 1
+post_value = 1
+idle = 1
+shift = "baud.rise"
+pull = true

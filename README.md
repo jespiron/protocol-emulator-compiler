@@ -33,8 +33,11 @@ once into `~/.cache/spatial`.
 
 The language reference is the crate documentation: `cargo doc --open`.
 
+Editor highlighting for VS Code, Vim, Neovim, Emacs, Helix and Zed: [`editors/`](editors/README.md).
+
 ## Layout
 
 - `src/`: the compiler and the `spatial` command.
 - `sim/`: the simulator harness and built-in peers (simulated devices), embedded into the binary.
 - `examples/`: example programs, which are also the end-to-end tests.
+- `editors/`: syntax highlighting for `.spt` in common editors.

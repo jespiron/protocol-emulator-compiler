@@ -1,0 +1,15 @@
+{
+  "name": "tree-sitter-spatial",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for Spatial (.spt), a small hardware-description language",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "grammar.js",
+  "keywords": ["tree-sitter", "parser", "spatial"],
+  "files": ["grammar.js", "tree-sitter.json", "src/**", "queries/*"],
+  "scripts": {
+    "generate": "npx --yes tree-sitter-cli@0.27.1 generate --abi 14",
+    "parse": "npx --yes tree-sitter-cli@0.27.1 parse --quiet --stat ../../examples/*.spt",
+    "test": "npx --yes tree-sitter-cli@0.27.1 test"
+  }
+}

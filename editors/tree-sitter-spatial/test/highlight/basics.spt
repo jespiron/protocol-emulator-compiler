@@ -1,0 +1,39 @@
+clock 50 MHz
+// <- keyword
+//    ^ number
+//       ^ constant.builtin
+
+const HALF = 8 cycles
+//    ^ constant
+
+pin sda: open_drain = bits.out
+// <- keyword
+//  ^ type
+//       ^ keyword.modifier
+//                         ^ variable.member
+
+timer gap { every: HALF, pulse, run: go until gap.tick }
+//    ^ type
+//          ^ property
+//                       ^ property
+//                                      ^ keyword.operator
+
+export fn transfer(data: bytes via bits, n: u8 in 1..=16) -> bytes {
+// <- keyword.modifier
+//     ^ keyword.function
+//        ^ function
+//                 ^ variable.parameter
+//                       ^ type.builtin
+//                             ^ keyword
+//                                             ^ keyword
+    for b in data { bits.load(b) }
+//  ^ keyword.repeat
+//        ^ keyword.repeat
+//                       ^ function.method.call
+    expect write(0x48, ninth: 1) fails "nack"
+//  ^ keyword
+//         ^ function.call
+//                     ^ variable.parameter
+//                               ^ keyword
+//                                      ^ string
+}

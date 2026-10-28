@@ -1,0 +1,13 @@
+# Append to ~/.config/helix/languages.toml, replacing /path/to/repo.
+# Then: hx --grammar build   (and copy runtime/queries/spatial, see editors/README.md)
+
+[[language]]
+name = "spatial"
+scope = "source.spatial"
+file-types = ["spt"]
+comment-token = "//"
+indent = { tab-width = 4, unit = "    " }
+
+[[grammar]]
+name = "spatial"
+source = { path = "/path/to/repo/editors/tree-sitter-spatial" }

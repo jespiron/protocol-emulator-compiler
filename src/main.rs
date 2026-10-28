@@ -1,4 +1,5 @@
 //! The `spatial` command: create, check, build and test programs.
+mod console;
 mod project;
 mod simulator;
 
@@ -26,7 +27,7 @@ enum Command {
     Check { file: Option<PathBuf> },
     /// Compile into `target/image.bin`.
     Build { file: Option<PathBuf> },
-    /// Build, then run the program's tests in RTL simulation.
+    /// Build, then talk to the program on a simulated chip; `--test` runs its tests instead.
     Run {
         /// Run the tests; `--test=NAME` runs only that one.
         #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "")]
@@ -81,11 +82,10 @@ fn run() -> AppResult<bool> {
             fs::write(&image, &build.image)?;
             println!("  wrote  {}", image.display());
         }
-        Command::Run { test: None, .. } => {
-            return Err(
-                "the interactive console is not built yet; run the tests with `spatial run --test`"
-                    .into(),
-            );
+        Command::Run { test: None, file } => {
+            let project = Project::find(file.as_deref())?;
+            let build = build(&project)?;
+            console::run(&project, &build)?;
         }
         Command::Run {
             test: Some(only),

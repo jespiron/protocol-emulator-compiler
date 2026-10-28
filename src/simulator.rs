@@ -1,15 +1,20 @@
-//! Run a program's tests against the real RTL.
+//! Run a program on the real RTL: its tests, or an interactive console.
 //!
 //! The Python simulator in `sim/` is embedded in the binary and unpacked into
 //! `target/sim`, so an installed `spatial` works anywhere. `uv` provides its
 //! locked Python environment; Verilator simulates the pinned RTL.
 use crate::AppResult;
 use serde::Deserialize;
+use serde_json::Value as Json;
 use spatial::HARDWARE_REVISION;
 use std::{
-    fs,
+    fs::{self, File},
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Child, Command},
+    sync::mpsc,
+    thread,
+    time::Duration,
 };
 
 const FILES: [(&str, &str); 8] = [
@@ -41,12 +46,18 @@ pub(crate) struct Failure {
     pub message: String,
 }
 
-/// Simulate the plan's tests (those named `only`, if given).
-pub(crate) fn run(
-    target: &Path,
-    plan: &serde_json::Value,
-    only: Option<&str>,
-) -> AppResult<Vec<Outcome>> {
+/// Shared by every project; upstream makefiles break on paths with spaces,
+/// which a project directory may have.
+fn cache() -> AppResult<PathBuf> {
+    Ok(std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .ok_or("cannot find a cache directory; set HOME")?
+        .join("spatial"))
+}
+
+/// Unpack the simulator and the plan, and return the command that runs them.
+fn simulation(target: &Path, plan: &Json, only: Option<&str>) -> AppResult<Command> {
     let sim = target.join("sim");
     for (name, content) in FILES {
         let path = sim.join(name);
@@ -54,18 +65,10 @@ pub(crate) fn run(
         fs::write(path, content)?;
     }
     fs::write(target.join("plan.json"), serde_json::to_vec(plan)?)?;
-    let results = target.join("results.json");
-    let _ = fs::remove_file(&results);
-    // Shared by every project; upstream makefiles break on paths with spaces,
-    // which a project directory may have.
-    let cache = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-        .ok_or("cannot find a cache directory; set HOME")?
-        .join("spatial");
-    let status = Command::new("uv")
+    let mut command = Command::new("uv");
+    command
         .env_remove("VIRTUAL_ENV")
-        .env("UV_PROJECT_ENVIRONMENT", cache.join("python"))
+        .env("UV_PROJECT_ENVIRONMENT", cache()?.join("python"))
         .args([
             "run",
             "--quiet",
@@ -79,17 +82,108 @@ pub(crate) fn run(
         .arg(sim.join("run.py"))
         .arg(target)
         .arg(HARDWARE_REVISION)
-        .arg(only.unwrap_or(""))
-        .status()
-        .map_err(|e| {
-            format!("cannot start uv ({e}); install it from https://docs.astral.sh/uv/")
-        })?;
+        .arg(only.unwrap_or(""));
+    Ok(command)
+}
+
+fn no_uv(error: std::io::Error) -> String {
+    format!("cannot start uv ({error}); install it from https://docs.astral.sh/uv/")
+}
+
+fn unfinished(target: &Path) -> String {
+    format!(
+        "the simulator did not finish; see {}",
+        target.join("simulation.log").display()
+    )
+}
+
+/// Simulate the plan's tests (those named `only`, if given).
+pub(crate) fn run(target: &Path, plan: &Json, only: Option<&str>) -> AppResult<Vec<Outcome>> {
+    let results = target.join("results.json");
+    let _ = fs::remove_file(&results);
+    let status = simulation(target, plan, only)?.status().map_err(no_uv)?;
     if !status.success() || !results.exists() {
-        return Err(format!(
-            "the simulator did not finish; see {}",
-            target.join("simulation.log").display()
-        )
-        .into());
+        return Err(unfinished(target).into());
     }
     Ok(serde_json::from_slice(&fs::read(results)?)?)
+}
+
+/// A running simulation that executes requests one at a time.
+pub(crate) struct Console {
+    target: PathBuf,
+    child: Child,
+    requests: Option<File>,
+    replies: BufReader<File>,
+}
+
+impl Console {
+    /// Start the simulation and wait until the chip is running.
+    pub(crate) fn start(target: &Path, plan: &Json) -> AppResult<Self> {
+        let cache = cache()?;
+        fs::create_dir_all(&cache)?;
+        let id = std::process::id();
+        let paths = [
+            cache.join(format!("console-{id}.requests")),
+            cache.join(format!("console-{id}.replies")),
+        ];
+        let joined = std::env::join_paths(&paths)?;
+        let mut child = simulation(target, plan, None)?
+            .env("SPATIAL_CONSOLE", joined)
+            .spawn()
+            .map_err(no_uv)?;
+        // Opening a pipe blocks until the simulator opens the other end, which
+        // never happens if it fails to start; so open it on another thread.
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let opened = (|| {
+                while !paths.iter().all(|p| p.exists()) {
+                    thread::sleep(Duration::from_millis(50));
+                }
+                let requests = File::options().write(true).open(&paths[0])?;
+                let replies = File::open(&paths[1])?;
+                Ok::<_, std::io::Error>((requests, replies))
+            })();
+            let _ = sender.send(opened);
+        });
+        let (requests, replies) = loop {
+            if let Ok(opened) = receiver.recv_timeout(Duration::from_millis(200)) {
+                break opened?;
+            }
+            if child.try_wait()?.is_some() {
+                return Err(unfinished(target).into());
+            }
+        };
+        let mut console = Self {
+            target: target.to_owned(),
+            child,
+            requests: Some(requests),
+            replies: BufReader::new(replies),
+        };
+        console.receive()?;
+        Ok(console)
+    }
+
+    fn receive(&mut self) -> AppResult<Json> {
+        let mut line = String::new();
+        if self.replies.read_line(&mut line)? == 0 {
+            return Err(unfinished(&self.target).into());
+        }
+        Ok(serde_json::from_str(&line)?)
+    }
+
+    /// Run one request (`{"wires", "peers", "steps"}`) and return the reply.
+    pub(crate) fn send(&mut self, request: &Json) -> AppResult<Json> {
+        let requests = self.requests.as_mut().expect("open until dropped");
+        writeln!(requests, "{request}")?;
+        requests.flush()?;
+        self.receive()
+    }
+}
+
+impl Drop for Console {
+    /// Closing the request pipe ends the simulation.
+    fn drop(&mut self) {
+        self.requests = None;
+        let _ = self.child.wait();
+    }
 }

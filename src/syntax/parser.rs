@@ -1,6 +1,6 @@
 //! Recursive-descent parser. Newlines are insignificant; every construct is
 //! self-delimiting, and commas between fields and statements are optional.
-use super::ast::{Arg, Expr, ExprKind, Field, Item, Name};
+use super::ast::{Arg, Expr, ExprKind, Field, Item, Name, Stmt, StmtKind};
 use super::lexer::{Kind, Token};
 use crate::diagnostic::{Error, Result, Span};
 
@@ -32,6 +32,11 @@ impl Parser {
 
     fn peek(&self) -> &Kind {
         &self.tokens[self.at].kind
+    }
+
+    fn peek_at(&self, offset: usize) -> &Kind {
+        let index = (self.at + offset).min(self.tokens.len() - 1);
+        &self.tokens[index].kind
     }
 
     fn span(&self) -> Span {
@@ -89,6 +94,16 @@ impl Parser {
                 span: self.bump().span,
             }),
             _ => Err(self.unexpected("a name")),
+        }
+    }
+
+    fn string(&mut self) -> Result<Name> {
+        match self.peek().clone() {
+            Kind::Str(text) => Ok(Name {
+                text,
+                span: self.bump().span,
+            }),
+            _ => Err(self.unexpected("a quoted name")),
         }
     }
 
@@ -167,12 +182,16 @@ impl Parser {
                     to: self.expr()?,
                 }
             }
+            "test" => Item::Test {
+                name: self.string()?,
+                body: self.block()?,
+            },
             _ => {
                 return Err(Error::new(
                     keyword.span,
                     format!(
                         "expected a declaration (clock, const, pin, timer, shifter, counter, \
-                         reg or export), found `{}`",
+                         reg, export or test), found `{}`",
                         keyword.text
                     ),
                 ));
@@ -211,6 +230,60 @@ impl Parser {
             self.eat(",");
         }
         Ok(fields)
+    }
+
+    fn block(&mut self) -> Result<Vec<Stmt>> {
+        self.expect("{")?;
+        let mut body = Vec::new();
+        while !self.eat("}") {
+            body.push(self.stmt()?);
+            self.eat(",");
+        }
+        Ok(body)
+    }
+
+    fn stmt(&mut self) -> Result<Stmt> {
+        let start = self.span();
+        let keyword = match self.peek() {
+            Kind::Ident(s) => s.clone(),
+            _ => String::new(),
+        };
+        // A keyword followed by `.`, `(` or `=` is an ordinary name instead.
+        let is_keyword = !matches!(self.peek_at(1), Kind::Sym("." | "(" | "="));
+        let kind = match keyword.as_str() {
+            "wait" if is_keyword => {
+                self.bump();
+                StmtKind::Wait(self.expr()?)
+            }
+            "expect" if is_keyword => {
+                self.bump();
+                StmtKind::Expect(self.expr()?)
+            }
+            "attach" if is_keyword => {
+                self.bump();
+                let peer = self.expr()?;
+                let alias = if self.eat("as") {
+                    Some(self.name()?)
+                } else {
+                    None
+                };
+                StmtKind::Attach { peer, alias }
+            }
+            "wire" if is_keyword => {
+                self.bump();
+                let from = self.expr()?;
+                self.expect("->")?;
+                StmtKind::Wire {
+                    from,
+                    to: self.expr()?,
+                }
+            }
+            _ => StmtKind::Expr(self.expr()?),
+        };
+        Ok(Stmt {
+            kind,
+            span: start.to(self.previous()),
+        })
     }
 
     pub(crate) fn expr(&mut self) -> Result<Expr> {
@@ -277,7 +350,21 @@ impl Parser {
                     kind: ExprKind::Field(Box::new(expr), field),
                 };
             } else if self.eat("(") {
-                let args = self.list(")", |p| Ok(Arg { value: p.expr()? }))?;
+                let args = self.list(")", |p| {
+                    let name = if matches!(p.peek(), Kind::Ident(_))
+                        && matches!(p.peek_at(1), Kind::Sym(":"))
+                    {
+                        let name = p.name()?;
+                        p.bump();
+                        Some(name)
+                    } else {
+                        None
+                    };
+                    Ok(Arg {
+                        name,
+                        value: p.expr()?,
+                    })
+                })?;
                 expr = Expr {
                     span: expr.span.to(self.previous()),
                     kind: ExprKind::Call(Box::new(expr), args),

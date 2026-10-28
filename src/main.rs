@@ -1,18 +1,22 @@
-//! The `spatial` command: create, check and build programs.
+//! The `spatial` command: create, check, build and test programs.
 mod project;
+mod simulator;
 
 use clap::{Parser, Subcommand};
 use project::Project;
 use std::{
     fs,
     io::{self, IsTerminal},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 type AppResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Parser)]
-#[command(version, about = "Compile programs for the spatial protocol chip")]
+#[command(
+    version,
+    about = "Compile and test programs for the spatial protocol chip"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -26,6 +30,13 @@ enum Command {
     Check { file: Option<PathBuf> },
     /// Compile into `target/image.bin`.
     Build { file: Option<PathBuf> },
+    /// Build, then run the program's tests in RTL simulation.
+    Run {
+        /// Run the tests; `--test=NAME` runs only that one.
+        #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "")]
+        test: Option<String>,
+        file: Option<PathBuf>,
+    },
 }
 
 /// A compile error already rendered with its source lines; printed as is.
@@ -138,12 +149,102 @@ fn build(project: &Project) -> AppResult<spatial::Build> {
     Ok(build)
 }
 
-fn run() -> AppResult<()> {
+/// One line per test, then a tally. Why a test failed is printed when only
+/// that test ran or only that test failed, or when the output is a log rather
+/// than a terminal; otherwise the last lines say how to run each failed test
+/// on its own.
+///
+/// ```text
+///   running 2 tests
+///   test loopback ............. pass  (39.6 us)
+///   test talks to a terminal .. FAIL  (52.7 us)
+///
+///   1 passed, 1 failed
+///
+///   To see why a test failed, run it on its own:
+///     spatial run --test="talks to a terminal" examples/uart.spt
+/// ```
+fn report(
+    project: &Project,
+    file: Option<&Path>,
+    build: &spatial::Build,
+    outcomes: &[simulator::Outcome],
+    only: Option<&str>,
+) -> bool {
+    let terminal = io::stdout().is_terminal();
+    let on = color(terminal);
+    let clock_hz = build.plan["clock_hz"].as_f64().unwrap_or(1.0);
+    let tests = |n: usize| if n == 1 { "test" } else { "tests" };
+    let total = build.tests.len();
+    match only {
+        Some(_) if total > 1 => println!("  running 1 of {total} tests"),
+        _ => println!("  running {} {}", outcomes.len(), tests(outcomes.len())),
+    }
+    let width = outcomes
+        .iter()
+        .map(|o| o.name.chars().count())
+        .max()
+        .unwrap_or(0);
+    for outcome in outcomes {
+        let dots = ".".repeat(width - outcome.name.chars().count() + 2);
+        let status = match outcome.error {
+            None => paint(on, "32", "pass"),
+            Some(_) => paint(on, "1;31", "FAIL"),
+        };
+        let micros = outcome.cycles as f64 * 1e6 / clock_hz;
+        println!("  test {} {dots} {status}  ({micros:.1} us)", outcome.name);
+    }
+    let failed: Vec<_> = outcomes
+        .iter()
+        .filter_map(|o| o.error.as_ref().map(|error| (o, error)))
+        .collect();
+    let reason = |error: &simulator::Failure| {
+        format!(
+            "{}:{}: {}",
+            project.display_path(),
+            error.line,
+            error.message
+        )
+    };
+    if only.is_some() {
+        for (_, error) in &failed {
+            println!("\n  {}", reason(error));
+        }
+        return failed.is_empty();
+    }
+    let passed = outcomes.len() - failed.len();
+    match failed.len() {
+        0 => println!("\n  {passed} passed"),
+        n => println!("\n  {passed} passed, {n} failed"),
+    }
+    if failed.is_empty() {
+        return true;
+    }
+    if let [(_, error)] = failed[..] {
+        println!("\n  {}", reason(error));
+    } else if terminal {
+        println!("\n  To see why a test failed, run it on its own:");
+        for (outcome, _) in &failed {
+            let mut command = format!("spatial run --test={}", shell_quote(&outcome.name));
+            if let Some(file) = file {
+                command = format!("{command} {}", shell_quote(&file.display().to_string()));
+            }
+            println!("    {}", paint(on, "36", &command));
+        }
+    } else {
+        for (outcome, error) in &failed {
+            println!("\n  {}\n    {}", outcome.name, reason(error));
+        }
+    }
+    false
+}
+
+fn run() -> AppResult<bool> {
     match Cli::parse().command {
         Command::New { name } => {
             project::new(&name)?;
             println!(
-                "Created {}/{}\n\n  cd {}\n  spatial build",
+                "Created {}/{}\n\n  cd {}\n  spatial run --test",
                 name.display(),
                 project::SOURCE,
                 shell_quote(&name.display().to_string())
@@ -160,19 +261,50 @@ fn run() -> AppResult<()> {
             fs::write(&image, &build.image)?;
             println!("  wrote  {}", image.display());
         }
+        Command::Run { test: None, .. } => {
+            return Err(
+                "the interactive console is not built yet; run the tests with `spatial run --test`"
+                    .into(),
+            );
+        }
+        Command::Run {
+            test: Some(only),
+            file,
+        } => {
+            let project = Project::find(file.as_deref())?;
+            let build = build(&project)?;
+            println!();
+            let only = Some(only.as_str()).filter(|name| !name.is_empty());
+            if let Some(name) = only.filter(|name| !build.tests.iter().any(|t| t == name)) {
+                return Err(format!(
+                    "no test named \"{name}\"; tests: {}",
+                    build.tests.join(", ")
+                )
+                .into());
+            }
+            if build.tests.is_empty() {
+                return Err("this program has no tests; add `test \"name\" { ... }`".into());
+            }
+            let outcomes = simulator::run(&project.target(), &build.plan, only)?;
+            return Ok(report(&project, file.as_deref(), &build, &outcomes, only));
+        }
     }
-    Ok(())
+    Ok(true)
 }
 
 fn main() {
-    if let Err(error) = run() {
-        match error.downcast_ref::<Reported>() {
-            Some(Reported(text)) => eprintln!("{text}"),
-            None => {
-                let on = color(io::stderr().is_terminal());
-                eprintln!("{}: {error}", paint(on, "1;31", "error"));
+    match run() {
+        Ok(true) => {}
+        Ok(false) => std::process::exit(1),
+        Err(error) => {
+            match error.downcast_ref::<Reported>() {
+                Some(Reported(text)) => eprintln!("{text}"),
+                None => {
+                    let on = color(io::stderr().is_terminal());
+                    eprintln!("{}: {error}", paint(on, "1;31", "error"));
+                }
             }
+            std::process::exit(1);
         }
-        std::process::exit(1);
     }
 }

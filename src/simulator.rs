@@ -12,7 +12,7 @@ use std::{
     process::Command,
 };
 
-const FILES: [(&str, &str); 6] = [
+const FILES: [(&str, &str); 7] = [
     ("pyproject.toml", include_str!("../sim/pyproject.toml")),
     ("uv.lock", include_str!("../sim/uv.lock")),
     ("run.py", include_str!("../sim/run.py")),
@@ -21,6 +21,7 @@ const FILES: [(&str, &str); 6] = [
         "peers/__init__.py",
         include_str!("../sim/peers/__init__.py"),
     ),
+    ("peers/spi.py", include_str!("../sim/peers/spi.py")),
     ("peers/uart.py", include_str!("../sim/peers/uart.py")),
 ];
 

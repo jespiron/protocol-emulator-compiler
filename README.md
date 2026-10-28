@@ -18,7 +18,7 @@ spatial run --test
 | `spatial build` | Write `target/image.bin` |
 | `spatial run --test` | Build, then run every `test` in RTL simulation (`--test=NAME` for one) |
 
-Commands find the nearest `main.spt`, or take a file: `spatial run --test examples/uart.spt`.
+Commands find the nearest `main.spt`, or take a file: `spatial run --test examples/spi.spt`.
 Running tests also needs [uv](https://docs.astral.sh/uv/), git, make, a C++
 compiler and Verilator 5.036 or newer. The first run fetches and builds the RTL
 once into `~/.cache/spatial`.
@@ -27,6 +27,7 @@ once into `~/.cache/spatial`.
 
 - [`examples/loopback.spt`](examples/loopback.spt): the starter project.
 - [`examples/uart.spt`](examples/uart.spt): full-duplex UART, tested against a terminal.
+- [`examples/spi.spt`](examples/spi.spt): an SPI controller with a host-callable `transfer`.
 
 The language reference is the crate documentation: `cargo doc --open`.
 

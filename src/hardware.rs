@@ -10,6 +10,8 @@ pub(crate) const TIMERS: usize = 4;
 pub(crate) const SHIFTERS: usize = 2;
 pub(crate) const COUNTERS: usize = 2;
 pub(crate) const LOGIC_CELLS: usize = 8;
+/// Controller `FIRE` pulse lines.
+pub(crate) const EVENTS: usize = 2;
 pub(crate) const SRAM_BYTES: usize = 1024;
 /// Shifter word length range.
 pub(crate) const MAX_WORD_BITS: i128 = 16;
@@ -43,6 +45,9 @@ impl Line {
         u16::from(self.0 - 32)
     }
 
+    pub(crate) fn fire(k: usize) -> Line {
+        Line(2 + k as u8)
+    }
     pub(crate) fn timer_rise(k: usize) -> Line {
         Line(4 + 2 * k as u8)
     }

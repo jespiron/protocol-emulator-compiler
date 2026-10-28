@@ -57,6 +57,11 @@ pub(crate) fn plan(design: &Design<'_>, source: &str) -> Result<Json> {
         "image": design.image,
         "pins": design.pins,
         "streams": streams,
+        "calls": {
+            "channel": design.exports.channel,
+            "functions": design.exports.functions,
+            "fails": design.exports.fails,
+        },
         "tests": tests,
         "invariants": invariants,
     }))
@@ -194,6 +199,76 @@ impl Planner<'_, '_> {
         }
     }
 
+    /// A call to an exported function: its name and arguments by parameter name.
+    fn call(&self, expr: &Expr) -> Result<Option<Json>> {
+        let ExprKind::Call(callee, args) = &expr.kind else {
+            return Ok(None);
+        };
+        let ExprKind::Name(function) = &callee.kind else {
+            return Ok(None);
+        };
+        let Some(spec) = self.design.exports.functions.get(function) else {
+            return Err(Error::new(
+                callee.span,
+                format!("`{function}` is not an exported function"),
+            ));
+        };
+        let params = spec["params"].as_array().expect("params are a list");
+        let mut values = Map::new();
+        for (i, arg) in args.iter().enumerate() {
+            let param = match &arg.name {
+                Some(name) => params.iter().find(|p| p["name"] == name.text.as_str()),
+                None => params.get(i),
+            }
+            .ok_or_else(|| {
+                Error::new(
+                    arg.value.span,
+                    format!("`{function}` has no parameter here"),
+                )
+            })?;
+            let value = self.argument(&arg.value)?;
+            let fits = match param["type"].as_str() {
+                Some("bytes") => value.is_array(),
+                _ => value.as_i64().is_some_and(|v| {
+                    (param["min"].as_i64().unwrap_or(0)..=param["max"].as_i64().unwrap_or(0))
+                        .contains(&v)
+                }),
+            };
+            if !fits {
+                return Err(Error::new(
+                    arg.value.span,
+                    match param["type"].as_str() {
+                        Some("bytes") => {
+                            format!("`{}` takes bytes", param["name"].as_str().unwrap_or(""))
+                        }
+                        _ => format!(
+                            "`{}` takes a number from {} to {}",
+                            param["name"].as_str().unwrap_or(""),
+                            param["min"],
+                            param["max"]
+                        ),
+                    },
+                ));
+            }
+            values.insert(param["name"].as_str().unwrap_or("").into(), value);
+        }
+        if let Some(missing) = params
+            .iter()
+            .find(|p| !values.contains_key(p["name"].as_str().unwrap_or("")))
+        {
+            return Err(Error::new(
+                expr.span,
+                format!(
+                    "`{function}` needs `{}`",
+                    missing["name"].as_str().unwrap_or("")
+                ),
+            ));
+        }
+        Ok(Some(
+            json!({ "op": "call", "function": function, "args": values }),
+        ))
+    }
+
     fn stmt(&mut self, stmt: &Stmt, line: usize) -> Result<()> {
         let mut step = match &stmt.kind {
             StmtKind::Wire { from, to } => {
@@ -237,18 +312,45 @@ impl Planner<'_, '_> {
                         return Err(Error::new(expr.span, "`write` takes the bytes to send"));
                     };
                     json!({ "op": "write", "target": target, "bytes": self.bytes(&arg.value)? })
+                } else if let Some(call) = self.call(expr)? {
+                    call
                 } else {
                     return Err(Error::new(
                         expr.span,
-                        "expected `<stream or peer>.write(...)`",
+                        "expected `<stream or peer>.write(...)` or a call to an exported function",
                     ));
                 }
             }
-            StmtKind::Expect(condition) => {
+            StmtKind::Expect {
+                condition,
+                fails: Some(message),
+            } => {
+                let mut call = self.call(condition)?.ok_or_else(|| {
+                    Error::new(
+                        condition.span,
+                        "`fails` follows a call to an exported function",
+                    )
+                })?;
+                if !self.design.exports.fails.contains(&message.text) {
+                    return Err(Error::new(
+                        message.span,
+                        format!(
+                            "no function in this program fails with \"{}\"",
+                            message.text
+                        ),
+                    ));
+                }
+                call["fails"] = json!(message.text);
+                call
+            }
+            StmtKind::Expect {
+                condition,
+                fails: None,
+            } => {
                 let ExprKind::Binary("==", actual, expected) = &condition.kind else {
                     return Err(Error::new(
                         condition.span,
-                        "expected `expect <stream or peer>.read(n) == <bytes>`",
+                        "expected `expect <read or call> == <bytes>`",
                     ));
                 };
                 let expected = self.bytes(expected)?;
@@ -270,15 +372,24 @@ impl Planner<'_, '_> {
                         ));
                     }
                     json!({ "op": "read", "target": target, "expect": expected })
+                } else if let Some(mut call) = self.call(actual)? {
+                    call["expect"] = json!(expected);
+                    call
                 } else {
                     return Err(Error::new(
                         actual.span,
-                        "expected `<stream or peer>.read(n)`",
+                        "expected `<stream or peer>.read(n)` or a call to an exported function",
                     ));
                 }
             }
             StmtKind::Wait(duration) => {
                 json!({ "op": "wait", "cycles": self.design.env.cycles(duration)? })
+            }
+            _ => {
+                return Err(Error::new(
+                    stmt.span,
+                    "this statement belongs in a function, not a test",
+                ));
             }
         };
         step["line"] = json!(line);

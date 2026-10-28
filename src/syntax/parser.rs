@@ -1,6 +1,6 @@
 //! Recursive-descent parser. Newlines are insignificant; every construct is
 //! self-delimiting, and commas between fields and statements are optional.
-use super::ast::{Arg, Expr, ExprKind, Field, Item, Name, Stmt, StmtKind};
+use super::ast::{Arg, Expr, ExprKind, Field, Item, Name, Param, Stmt, StmtKind, Type};
 use super::lexer::{Kind, Token};
 use crate::diagnostic::{Error, Result, Span};
 
@@ -171,6 +171,13 @@ impl Parser {
                     value: self.expr()?,
                 }
             }
+            "event" => {
+                let mut names = vec![self.name()?];
+                while self.eat(",") {
+                    names.push(self.name()?);
+                }
+                Item::Event(names)
+            }
             "export" if self.eat("stream") => {
                 let name = self.name()?;
                 self.expect(":")?;
@@ -182,6 +189,8 @@ impl Parser {
                     to: self.expr()?,
                 }
             }
+            "export" if self.eat("fn") => self.function(true)?,
+            "fn" => self.function(false)?,
             "test" => Item::Test {
                 name: self.string()?,
                 body: self.block()?,
@@ -198,12 +207,51 @@ impl Parser {
                     keyword.span,
                     format!(
                         "expected a declaration (clock, const, pin, timer, shifter, counter, \
-                         reg, export, test or always), found `{}`",
+                         reg, event, fn, export, test or always), found `{}`",
                         keyword.text
                     ),
                 ));
             }
         })
+    }
+
+    fn function(&mut self, exported: bool) -> Result<Item> {
+        let name = self.name()?;
+        self.expect("(")?;
+        let params = self.list(")", |p| {
+            let name = p.name()?;
+            p.expect(":")?;
+            Ok(Param { name, ty: p.ty()? })
+        })?;
+        let returns = if self.eat("->") {
+            Some(self.ty()?)
+        } else {
+            None
+        };
+        Ok(Item::Fn {
+            exported,
+            name,
+            params,
+            returns,
+            body: self.block()?,
+        })
+    }
+
+    fn ty(&mut self) -> Result<Type> {
+        let name = self.name()?;
+        let via = if self.eat("via") {
+            Some(self.name()?)
+        } else {
+            None
+        };
+        let range = if self.eat("in") {
+            let low = self.binary(LEVELS.len() - 2)?;
+            self.expect("..=")?;
+            Some((low, self.binary(LEVELS.len() - 2)?))
+        } else {
+            None
+        };
+        Ok(Type { name, via, range })
     }
 
     /// Comma-separated items up to `close`; a trailing comma is allowed.
@@ -258,13 +306,63 @@ impl Parser {
         // A keyword followed by `.`, `(` or `=` is an ordinary name instead.
         let is_keyword = !matches!(self.peek_at(1), Kind::Sym("." | "(" | "="));
         let kind = match keyword.as_str() {
+            "fire" if is_keyword => {
+                self.bump();
+                StmtKind::Fire(self.name()?)
+            }
             "wait" if is_keyword => {
                 self.bump();
                 StmtKind::Wait(self.expr()?)
             }
+            "repeat" if is_keyword => {
+                self.bump();
+                StmtKind::Repeat {
+                    count: self.expr()?,
+                    body: self.block()?,
+                }
+            }
+            "for" if is_keyword => {
+                self.bump();
+                let var = self.name()?;
+                self.expect("in")?;
+                StmtKind::For {
+                    var,
+                    iter: self.expr()?,
+                    body: self.block()?,
+                }
+            }
+            "if" if is_keyword => {
+                self.bump();
+                let condition = self.expr()?;
+                let then = self.block()?;
+                let otherwise = if self.eat("else") {
+                    self.block()?
+                } else {
+                    Vec::new()
+                };
+                StmtKind::If {
+                    condition,
+                    then,
+                    otherwise,
+                }
+            }
+            "reply" if is_keyword => {
+                self.bump();
+                StmtKind::Reply(self.expr()?)
+            }
+            "fail" if is_keyword => {
+                self.bump();
+                StmtKind::Fail(self.string()?)
+            }
             "expect" if is_keyword => {
                 self.bump();
-                StmtKind::Expect(self.expr()?)
+                let condition = self.expr()?;
+                let fails = if self.eat("fails") {
+                    Some(self.string()?)
+                } else {
+                    None
+                };
+                StmtKind::Expect { condition, fails }
             }
             "attach" if is_keyword => {
                 self.bump();
@@ -285,7 +383,27 @@ impl Parser {
                     to: self.expr()?,
                 }
             }
-            _ => StmtKind::Expr(self.expr()?),
+            _ => {
+                let target = self.expr()?;
+                if matches!(&target.kind, ExprKind::Field(_, field) if field.text == "set")
+                    && self.is("{")
+                {
+                    let ExprKind::Field(object, _) = target.kind else {
+                        unreachable!()
+                    };
+                    StmtKind::Set {
+                        target: *object,
+                        fields: self.fields()?,
+                    }
+                } else if self.eat("=") {
+                    StmtKind::Assign {
+                        target,
+                        value: self.expr()?,
+                    }
+                } else {
+                    StmtKind::Expr(target)
+                }
+            }
         };
         Ok(Stmt {
             kind,

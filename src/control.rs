@@ -279,11 +279,12 @@ pub(crate) fn lower(chip: &Chip<'_>, functions: &[&Item], asm: &mut Assembler) -
 }
 
 /// What a function can read from the chip.
-const READABLE: &str =
-    "a function can read a shifter's `.received` and `.post_bits`, and a counter's `.count`";
+const READABLE: &str = "a function can read a shifter's `.received` and `.post_bits`, a counter's \
+                        `.count`, and a crc's `.low` and `.high`";
 
 /// What a function's steps can be, besides control flow.
-const STEPS: &str = "a step can call another function, or a shifter's `.load(value)`";
+const STEPS: &str = "a step can call another function, a shifter's `.load(value)`, `flags(...)`, \
+                     or a pin's `.release()` or `.drive()`";
 
 fn too_big(n: i128, span: crate::Span) -> Error {
     Error::new(span, format!("{n} doesn't fit in 16 bits"))
@@ -424,6 +425,8 @@ impl Lowering<'_, '_> {
                     (Kind::Shifter, "received") => chip_read(1 + 2 * k),
                     (Kind::Shifter, "post_bits") => chip_read(2 + 2 * k),
                     (Kind::Counter, "count") => chip_read(5 + k),
+                    (Kind::Crc, "low") => chip_read(7),
+                    (Kind::Crc, "high") => chip_read(8),
                     (kind, other) => Err(Error::new(
                         field.span,
                         format!("a function can't read `{name}.{other}`"),
@@ -638,7 +641,7 @@ impl Lowering<'_, '_> {
                     }
                 }
             }
-            StmtKind::Wait(expr) => {
+            StmtKind::Wait { signal: expr, next } => {
                 if let ExprKind::Quantity(n, unit) = &expr.kind {
                     return Err(Error::new(expr.span, "a function can't wait for a length of time")
                         .note("functions run on the chip's controller, which has no clock; only timers count time")
@@ -652,6 +655,9 @@ impl Lowering<'_, '_> {
                         )));
                 }
                 let line = self.chip.signal(expr)?;
+                if *next {
+                    self.asm.clear_events();
+                }
                 self.asm.wait(line.0);
             }
             StmtKind::Set { target, fields } => {
@@ -754,6 +760,51 @@ impl Lowering<'_, '_> {
                         _ => self.operand(&arg.value, scope)?,
                     };
                     self.write(config::shifter(k, 0), operand, arg.value.span)?;
+                }
+                ExprKind::Name(function) if function == "flags" => {
+                    // `flags(a, b)` raises the named flags and lowers the rest.
+                    let mut value = 0u16;
+                    for arg in args {
+                        match self.chip.decl(&arg.value)? {
+                            (_, decl) if decl.kind == Kind::Flag => value |= 1 << decl.index,
+                            (name, decl) => {
+                                return Err(Error::new(
+                                    arg.value.span,
+                                    "`flags(...)` only takes flags",
+                                )
+                                .label(format!("`{name}` is a {}", decl.kind.noun()))
+                                .note("declare a flag with `flag name`"));
+                            }
+                        }
+                    }
+                    self.asm.config(config::FLAGS, value);
+                }
+                ExprKind::Field(object, method)
+                    if matches!(method.text.as_str(), "release" | "drive") =>
+                {
+                    let (name, decl) = self.chip.decl(object)?;
+                    if decl.kind != Kind::Pin {
+                        return Err(Error::new(
+                            *span,
+                            format!("only a pin has `.{}()`", method.text),
+                        )
+                        .label(format!("`{name}` is a {}", decl.kind.noun())));
+                    }
+                    if !args.is_empty() {
+                        return Err(Error::new(
+                            *span,
+                            format!("`.{}()` takes no arguments", method.text),
+                        ));
+                    }
+                    let writes = if method.text == "release" {
+                        vec![(config::pin(self.chip.pads[decl.index]), 0)]
+                    } else {
+                        let (name, mode, source) = self.chip.pin_decls[&name];
+                        self.chip.pin(name, mode, source)?
+                    };
+                    for (address, value) in writes {
+                        self.asm.config(address, value);
+                    }
                 }
                 ExprKind::Name(function) => self.inline(function, args, *span, scope)?,
                 _ => {

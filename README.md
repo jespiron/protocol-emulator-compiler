@@ -30,6 +30,7 @@ once into `~/.cache/spatial`.
 - [`examples/uart.spt`](examples/uart.spt): full-duplex UART, tested against a terminal.
 - [`examples/spi.spt`](examples/spi.spt): an SPI controller with a host-callable `transfer`.
 - [`examples/i2c.spt`](examples/i2c.spt): an I2C controller with `write_read`, NACK reporting and clock stretching.
+- [`examples/usb.spt`](examples/usb.spt): a low-speed USB packet transmitter: NRZI, bit stuffing, CRC16 and end of packet in the fabric.
 
 The language reference is the crate documentation: `cargo doc --open`.
 

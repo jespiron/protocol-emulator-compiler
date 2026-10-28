@@ -393,7 +393,10 @@ impl Planner<'_, '_> {
                     ));
                 }
             }
-            StmtKind::Wait(duration) => {
+            StmtKind::Wait {
+                signal: duration,
+                next: false,
+            } => {
                 let cycles = self
                     .design
                     .env

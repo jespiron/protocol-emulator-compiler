@@ -1,0 +1,11 @@
+name = "Spatial"
+grammar = "spatial"
+path_suffixes = ["spt"]
+line_comments = ["// "]
+tab_size = 4
+brackets = [
+  { start = "{", end = "}", close = true, newline = true },
+  { start = "[", end = "]", close = true, newline = true },
+  { start = "(", end = ")", close = true, newline = true },
+  { start = "\"", end = "\"", close = true, newline = false, not_in = ["string", "comment"] },
+]

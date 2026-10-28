@@ -94,6 +94,7 @@ pub(crate) struct Design<'a> {
     pub streams: BTreeMap<String, Stream>,
     pub usage: Vec<(&'static str, usize, usize)>,
     pub tests: Vec<(&'a Name, &'a [Stmt])>,
+    pub invariants: Vec<(&'a Name, &'a Expr)>,
 }
 
 /// Names and hardware assignments.
@@ -125,6 +126,7 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
     let mut counts = [0usize; 6];
     let mut pins = Vec::new();
     let mut tests = Vec::new();
+    let mut invariants = Vec::new();
     let mut declare = |name: &Name, kind: Option<Kind>, chip: &mut Chip| {
         if names.insert(name.text.clone(), name.span).is_some() {
             return Err(Error::new(
@@ -181,6 +183,7 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
             Item::Reg { name, .. } => declare(name, Some(Kind::Reg), &mut chip)?,
             Item::Stream { name, .. } => declare(name, None, &mut chip)?,
             Item::Test { name, body } => tests.push((name, body.as_slice())),
+            Item::Always { name, condition } => invariants.push((name, condition)),
         }
     }
     chip.pads = assign_pads(&pins)?;
@@ -246,6 +249,7 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
         streams,
         usage,
         tests,
+        invariants,
     })
 }
 

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, FallingEdge, Lock
+from cocotb.triggers import ClockCycles, FallingEdge, Lock, RisingEdge
 from cocotb.utils import get_sim_time
 from cocotb_tests.common import reset_top
 from cocotb_tests.fabric import load_program, pop_rx_tagged, push_tx, select_channel, start_engine, tx_full
@@ -40,6 +40,11 @@ class Bus:
         self.dut = dut
         self.wires = {to: source for source, to in wires}
         self.drive = {}  # (pad, peer name) -> 0 or 1; absent means released
+
+    def driven(self, pad):
+        """Whether the chip or a peer drives the pad, rather than the pull-up."""
+        pad = self.wires.get(pad, pad)
+        return bool((int(self.dut.uio_oe.value) >> pad) & 1) or any(p == pad for p, _ in self.drive)
 
     def level(self, pad):
         pad = self.wires.get(pad, pad)
@@ -97,12 +102,48 @@ async def wait_for(dut, ready, describe, check):
     raise Failure(f"{describe()} after {STEP_TIMEOUT_CYCLES} cycles")
 
 
+class Invariants:
+    """Check every `always` condition on every clock cycle."""
+
+    def __init__(self, dut, bus, invariants):
+        self.dut, self.bus, self.invariants = dut, bus, invariants
+        self.problems = []
+
+    def holds(self, node, now, before):
+        if "const" in node:
+            return bool(node["const"])
+        if "edge" in node:
+            # A line going from floating to driven is not an edge.
+            (a, was_driven), (b, is_driven) = before[node["pin"]], now[node["pin"]]
+            if not (was_driven and is_driven):
+                return False
+            return {"changed": a != b, "rise": not a and b, "fall": a and not b}[node["edge"]]
+        if "pin" in node:
+            return bool(now[node["pin"]][0])
+        x = self.holds(node["a"], now, before)
+        if node["op"] == "not":
+            return not x
+        y = self.holds(node["b"], now, before)
+        return {"&&": x and y, "||": x or y, "==": x == y, "!=": x != y, "implies": not x or y}[node["op"]]
+
+    async def run(self):
+        before, cycle = None, 0
+        while True:
+            await RisingEdge(self.dut.clk)
+            now = [(self.bus.level(p), self.bus.driven(p)) for p in range(8)]
+            for invariant in self.invariants:
+                if before is not None and not self.holds(invariant["check"], now, before):
+                    self.problems.append((invariant, cycle))
+            before, cycle = now, cycle + 1
+
+
 async def run_test(dut, plan, test, period_ps):
     await reset_top(dut)
     await load_program(dut, plan["image"])
     channels = {s["channel"] for s in plan["streams"].values() if s["direction"] == "from_chip"}
     bus = Bus(dut, test["wires"])
     host = Host(dut, channels)
+    invariants = Invariants(dut, bus, plan["invariants"])
     attached = {}
     for spec in test["peers"]:
         peer = peers.attach(spec, bus, dut)
@@ -119,9 +160,13 @@ async def run_test(dut, plan, test, period_ps):
         for channel, buffer in host.received.items():
             if any(err for _, _, err in buffer):
                 raise Failure(f"channel {channel} received a byte marked as an error (wrong stop or parity bit)")
+        if invariants.problems:
+            invariant, cycle = invariants.problems[0]
+            raise Failure(f"always \"{invariant['name']}\" (line {invariant['line']}) broke at cycle {cycle}")
 
     async with host.link:
         await start_engine(dut)
+    tasks.append(cocotb.start_soon(invariants.run()))
     started = get_sim_time("ps")
     line = test["line"]
     try:

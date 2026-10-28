@@ -1,0 +1,21 @@
+[package]
+name = "spatial"
+version = "0.3.0"
+edition = "2024"
+description = "Compiler for the spatial protocol chip"
+repository = "https://github.com/jespiron/protocol-emulator-compiler"
+include = ["/src/**/*.rs", "/examples/*.spt", "/README.md", "/Cargo.toml", "/Cargo.lock"]
+
+[[bin]]
+name = "spatial"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+
+[lints.clippy]
+all = "warn"

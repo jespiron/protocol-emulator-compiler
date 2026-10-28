@@ -1,0 +1,27 @@
+// Send bytes out of one pin and read them back on another.
+//
+// A shifter turns each byte into bits on a wire, framed by a 0 before and a 1
+// after so the receiver can tell where a byte starts. A timer sets the pace.
+
+const BIT = 64 cycles
+
+pin out_wire: out = sender.out
+pin in_wire: in
+
+timer send_clock { every: BIT, first: BIT - 2 cycles, pulse, run: sender.busy until sender.done }
+shifter sender {
+    frame: [0, data(8), 1],
+    idle: 1,
+    shift: send_clock.tick,
+}
+
+timer read_clock { every: BIT, first: BIT / 2 - 1 cycles, pulse, run: in_wire.fall until receiver.done }
+shifter receiver {
+    frame: [0, data(8), 1],
+    start: in_wire.fall,
+    shift: read_clock.tick,
+    sample: in_wire at read_clock.tick,
+}
+
+export stream send: host -> sender
+export stream recv: receiver -> host

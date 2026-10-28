@@ -1,0 +1,28 @@
+{
+  "$schema": "https://tree-sitter.github.io/tree-sitter/assets/schemas/config.schema.json",
+  "grammars": [
+    {
+      "name": "spatial",
+      "camelcase": "Spatial",
+      "title": "Spatial",
+      "scope": "source.spatial",
+      "file-types": ["spt"],
+      "highlights": "queries/highlights.scm",
+      "injection-regex": "^spatial$"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "UNLICENSED",
+    "description": "Spatial (.spt) grammar for tree-sitter",
+    "authors": [{ "name": "Jessica Ruan", "email": "jess@standardkernel.com" }]
+  },
+  "bindings": {
+    "c": false,
+    "go": false,
+    "node": false,
+    "python": false,
+    "rust": false,
+    "swift": false
+  }
+}

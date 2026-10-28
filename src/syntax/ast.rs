@@ -32,8 +32,18 @@ pub(crate) enum Item {
         init: Option<Expr>,
         value: Expr,
     },
+    /// `event begin, finish`
+    Event(Vec<Name>),
     /// `export stream send: host -> sender`
     Stream { name: Name, from: Expr, to: Expr },
+    /// `export fn transfer(...) -> bytes { ... }` or a private `fn`.
+    Fn {
+        exported: bool,
+        name: Name,
+        params: Vec<Param>,
+        returns: Option<Type>,
+        body: Vec<Stmt>,
+    },
     /// `test "loopback" { ... }`
     Test { name: Name, body: Vec<Stmt> },
     /// `always "cs idles high" { expr }`
@@ -48,6 +58,20 @@ pub(crate) struct Field {
 }
 
 #[derive(Debug)]
+pub(crate) struct Param {
+    pub name: Name,
+    pub ty: Type,
+}
+
+/// `u8`, `bytes via bits`, `u8 in 1..=16`
+#[derive(Debug)]
+pub(crate) struct Type {
+    pub name: Name,
+    pub via: Option<Name>,
+    pub range: Option<(Expr, Expr)>,
+}
+
+#[derive(Debug)]
 pub(crate) struct Stmt {
     pub kind: StmtKind,
     pub span: Span,
@@ -55,9 +79,29 @@ pub(crate) struct Stmt {
 
 #[derive(Debug)]
 pub(crate) enum StmtKind {
+    Fire(Name),
     Wait(Expr),
-    /// `expect a == b`
-    Expect(Expr),
+    Repeat {
+        count: Expr,
+        body: Vec<Stmt>,
+    },
+    For {
+        var: Name,
+        iter: Expr,
+        body: Vec<Stmt>,
+    },
+    If {
+        condition: Expr,
+        then: Vec<Stmt>,
+        otherwise: Vec<Stmt>,
+    },
+    Reply(Expr),
+    Fail(Name),
+    /// `expect a == b`, or `expect call fails "reason"`.
+    Expect {
+        condition: Expr,
+        fails: Option<Name>,
+    },
     Attach {
         peer: Expr,
         alias: Option<Name>,
@@ -65,6 +109,15 @@ pub(crate) enum StmtKind {
     Wire {
         from: Expr,
         to: Expr,
+    },
+    /// `sender.set { frame: [...] }`
+    Set {
+        target: Expr,
+        fields: Vec<Field>,
+    },
+    Assign {
+        target: Expr,
+        value: Expr,
     },
     Expr(Expr),
 }

@@ -13,9 +13,10 @@ A peer class takes (bus, dut, name, **args) and provides:
 
 import inspect
 
+from peers.spi import SpiDevice
 from peers.uart import UartDevice
 
-KINDS = {"uart_device": UartDevice}
+KINDS = {"spi_device": SpiDevice, "uart_device": UartDevice}
 
 
 def attach(spec, bus, dut):

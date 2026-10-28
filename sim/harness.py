@@ -1,7 +1,7 @@
 """Run a compiled program's tests against the RTL, one fresh chip per test.
 
-The plan comes from `spatial run --test`: the SRAM image, pin and stream
-assignments, and each test's wires, peers and steps. Results go
+The plan comes from `spatial run --test`: the SRAM image, pin, stream and
+function descriptions, and each test's wires, peers and steps. Results go
 to a JSON file that `spatial` prints. A failing test never stops the others.
 """
 
@@ -67,13 +67,13 @@ class Host:
         self.link = Lock()
         self.received = {channel: [] for channel in sorted(channels)}
 
-    async def write(self, channel, data):
-        for byte in data:
+    async def write(self, channel, data, eop_last=False):
+        for i, byte in enumerate(data):
             while True:
                 async with self.link:
                     await select_channel(self.dut, channel)
                     if not await tx_full(self.dut):
-                        await push_tx(self.dut, byte)
+                        await push_tx(self.dut, byte, eop=eop_last and i == len(data) - 1)
                         break
                 await ClockCycles(self.dut.clk, 8)
 
@@ -91,6 +91,11 @@ class Host:
                 await self.poll(channel)
             await ClockCycles(self.dut.clk, 4)
 
+    async def flush(self, channel):
+        """Collect everything the channel holds right now."""
+        while await self.poll(channel) is not None:
+            pass
+
 
 async def wait_for(dut, ready, describe, check):
     """Wait until `ready()` is true, or fail after STEP_TIMEOUT_CYCLES."""
@@ -100,6 +105,82 @@ async def wait_for(dut, ready, describe, check):
             return
         await ClockCycles(dut.clk, 16)
     raise Failure(f"{describe()} after {STEP_TIMEOUT_CYCLES} cycles")
+
+
+def host_value(expr, args, elements):
+    """Evaluate a value the host computes from a call's arguments."""
+    if isinstance(expr, int):
+        return expr
+    if "param" in expr:
+        return args[expr["param"]]
+    if "len" in expr:
+        return len(args[expr["len"]])
+    if "element" in expr:
+        return elements[expr["element"]]
+    a, b = host_value(expr["a"], args, elements), host_value(expr["b"], args, elements)
+    return {"+": a + b, "-": a - b, "<<": a << b, ">>": a >> b, "|": a | b, "&": a & b, "^": a ^ b}[expr["op"]]
+
+
+def call_bytes(sends, args, elements=None):
+    """The bytes a call sends after its function id, mirroring the body's loops."""
+    elements = elements or {}
+    out = []
+    for item in sends:
+        if "value" in item:
+            out.append(host_value(item["value"], args, elements))
+        elif "for" in item:
+            items = args[item["in"]]
+            out.append(len(items))
+            for element in items:
+                out += call_bytes(item["body"], args, {**elements, item["for"]: element})
+        else:
+            count = host_value(item["repeat"], args, elements)
+            out.append(count)
+            for _ in range(max(count, 0)):
+                out += call_bytes(item["body"], args, elements)
+    return out
+
+
+async def call(dut, host, calls, step, check):
+    """Call an exported function; return (result bytes, fail message or None)."""
+    name = step["function"]
+    function = calls["functions"][name]
+    args = step["args"]
+    channel = calls["channel"]
+    payload = call_bytes(function["sends"], args)
+    if any(not 0 <= value <= 255 for value in payload):
+        raise Failure(f"`{name}` would send {payload}; every value must fit in a byte")
+    command = cocotb.start_soon(host.write(channel, [function["id"], *payload, 0], eop_last=True))
+    writers = []
+    for param in function["params"]:
+        if param["type"] == "bytes" and param["via"] is not None:
+            writers.append(cocotb.start_soon(host.write(param["via"], args[param["name"]])))
+    replies = host.received[channel]
+    await wait_for(
+        dut,
+        lambda: any(eop for _, eop, _ in replies),
+        lambda: f"`{name}` got no answer (replies so far: {fmt(b for b, _, _ in replies)})",
+        check,
+    )
+    end = next(i for i, (_, eop, _) in enumerate(replies) if eop)
+    answer = [b for b, _, _ in replies[:end]]
+    status, _, error = replies[end]
+    del replies[: end + 1]
+    # After a failure the chip discards the rest of the call, up to its
+    # terminator, so the whole call must still be sent.
+    await command
+    for writer in writers:
+        writer.cancel()
+    if isinstance(function["result"], dict):
+        buffer = host.received[function["result"]["channel"]]
+        await host.flush(function["result"]["channel"])
+        answer = [b for b, _, _ in buffer]
+        buffer.clear()
+    if not error:
+        return answer, None
+    if status == 0xFF:
+        raise Failure(f"the chip did not recognize `{name}`")
+    return answer, calls["fails"][status - 1]
 
 
 class Invariants:
@@ -140,7 +221,11 @@ class Invariants:
 async def run_test(dut, plan, test, period_ps):
     await reset_top(dut)
     await load_program(dut, plan["image"])
+    calls = plan["calls"]
     channels = {s["channel"] for s in plan["streams"].values() if s["direction"] == "from_chip"}
+    if calls["channel"] is not None:
+        channels.add(calls["channel"])
+        channels |= {f["result"]["channel"] for f in calls["functions"].values() if isinstance(f["result"], dict)}
     bus = Bus(dut, test["wires"])
     host = Host(dut, channels)
     invariants = Invariants(dut, bus, plan["invariants"])
@@ -158,7 +243,7 @@ async def run_test(dut, plan, test, period_ps):
             if peer.problems:
                 raise Failure(f"`{name}`: {peer.problems[0]}")
         for channel, buffer in host.received.items():
-            if any(err for _, _, err in buffer):
+            if channel != calls["channel"] and any(err for _, _, err in buffer):
                 raise Failure(f"channel {channel} received a byte marked as an error (wrong stop or parity bit)")
         if invariants.problems:
             invariant, cycle = invariants.problems[0]
@@ -192,6 +277,15 @@ async def run_test(dut, plan, test, period_ps):
                 del buffer[:count]
                 if got != step["expect"]:
                     raise Failure(f"expected {fmt(step['expect'])}, got {fmt(got)}")
+            elif step["op"] == "call":
+                result, failed = await call(dut, host, calls, step, check)
+                if "fails" in step and failed != step["fails"]:
+                    outcome = f'failed with "{failed}"' if failed else "succeeded"
+                    raise Failure(f"expected `{step['function']}` to fail with \"{step['fails']}\", but it {outcome}")
+                if "fails" not in step and failed:
+                    raise Failure(f"`{step['function']}` failed: {failed}")
+                if "expect" in step and result != step["expect"]:
+                    raise Failure(f"expected {fmt(step['expect'])}, got {fmt(result)}")
             elif step["op"] == "wait":
                 await ClockCycles(dut.clk, step["cycles"])
             check()

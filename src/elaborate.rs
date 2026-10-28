@@ -1,5 +1,6 @@
 //! Resolve names, assign hardware, and turn declarations into configuration
 //! writes. This is where "does it fit on the chip?" is decided.
+use crate::control::{self, Exports};
 use crate::diagnostic::{Error, Result, Span};
 use crate::hardware::{self, Line, PinMode, config};
 use crate::logic::{self, Formula};
@@ -17,6 +18,7 @@ pub(crate) enum Kind {
     Shifter,
     Counter,
     Reg,
+    Event,
 }
 
 impl Kind {
@@ -27,6 +29,7 @@ impl Kind {
             Kind::Shifter => "shifter",
             Kind::Counter => "counter",
             Kind::Reg => "reg",
+            Kind::Event => "event",
         }
     }
 
@@ -37,7 +40,7 @@ impl Kind {
             Kind::Timer => "`.tick`/`.rise`, `.fall` (pulses) or `.out` (level)",
             Kind::Shifter => "`.word`, `.done` (pulses), `.out` or `.busy` (levels)",
             Kind::Counter => "`.reached` (pulse) or `.at_least` (level)",
-            Kind::Reg => "its name",
+            Kind::Reg | Kind::Event => "its name",
         }
     }
 
@@ -48,6 +51,7 @@ impl Kind {
             Kind::Shifter => (hardware::SHIFTERS, "shifters"),
             Kind::Counter => (hardware::COUNTERS, "counters"),
             Kind::Reg => (hardware::LOGIC_CELLS, "logic cells (`reg`s)"),
+            Kind::Event => (hardware::EVENTS, "events"),
         }
     }
 }
@@ -92,17 +96,20 @@ pub(crate) struct Design<'a> {
     /// Pin name to physical `uio` pad.
     pub pins: BTreeMap<String, usize>,
     pub streams: BTreeMap<String, Stream>,
+    pub exports: Exports,
     pub usage: Vec<(&'static str, usize, usize)>,
     pub tests: Vec<(&'a Name, &'a [Stmt])>,
     pub invariants: Vec<(&'a Name, &'a Expr)>,
 }
 
-/// Names and hardware assignments.
-pub(crate) struct Chip {
+/// Names, hardware assignments and tile declarations, shared with the
+/// controller lowering so `.set` can re-encode a tile at runtime.
+pub(crate) struct Chip<'a> {
     pub env: Env,
     pub decls: HashMap<String, Decl>,
     pub pads: Vec<usize>,
     pub fifos: Vec<Fifo>,
+    pub tiles: HashMap<String, &'a [Field]>,
 }
 
 pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
@@ -121,13 +128,14 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
         decls: HashMap::new(),
         pads: Vec::new(),
         fifos: vec![Fifo::default(); hardware::SHIFTERS],
+        tiles: HashMap::new(),
     };
     let mut names: HashMap<String, Span> = HashMap::new();
     let mut counts = [0usize; 6];
     let mut pins = Vec::new();
     let mut tests = Vec::new();
     let mut invariants = Vec::new();
-    let mut declare = |name: &Name, kind: Option<Kind>, chip: &mut Chip| {
+    let mut declare = |name: &Name, kind: Option<Kind>, chip: &mut Chip<'_>| {
         if names.insert(name.text.clone(), name.span).is_some() {
             return Err(Error::new(
                 name.span,
@@ -173,16 +181,22 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
                 };
                 pins.push((name, allowed));
             }
-            Item::Tile { kind, name, .. } => {
+            Item::Tile { kind, name, fields } => {
                 let kind = match kind.text.as_str() {
                     "timer" => Kind::Timer,
                     "shifter" => Kind::Shifter,
                     _ => Kind::Counter,
                 };
                 declare(name, Some(kind), &mut chip)?;
+                chip.tiles.insert(name.text.clone(), fields);
             }
             Item::Reg { name, .. } => declare(name, Some(Kind::Reg), &mut chip)?,
-            Item::Stream { name, .. } => declare(name, None, &mut chip)?,
+            Item::Event(list) => {
+                for name in list {
+                    declare(name, Some(Kind::Event), &mut chip)?;
+                }
+            }
+            Item::Stream { name, .. } | Item::Fn { name, .. } => declare(name, None, &mut chip)?,
             Item::Test { name, body } => tests.push((name, body.as_slice())),
             Item::Always { name, condition } => invariants.push((name, condition)),
         }
@@ -195,6 +209,11 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
             streams.insert(name.text.clone(), chip.stream(name, from, to)?);
         }
     }
+    let functions: Vec<&Item> = items
+        .iter()
+        .filter(|i| matches!(i, Item::Fn { .. }))
+        .collect();
+    control::claim_fifos(&mut chip, &functions)?;
 
     let mut asm = Assembler::default();
     for item in items {
@@ -214,7 +233,7 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
         }
     }
     asm.config(config::ARM, 1);
-    asm.idle_forever();
+    let exports = control::lower(&chip, &functions, &mut asm)?;
     let image = asm
         .assemble()
         .map_err(|message| Error::new(Span::default(), message))?;
@@ -229,6 +248,7 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
         Kind::Shifter,
         Kind::Counter,
         Kind::Reg,
+        Kind::Event,
     ];
     let mut usage: Vec<_> = kinds
         .iter()
@@ -248,6 +268,7 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
         image,
         pins,
         streams,
+        exports,
         usage,
         tests,
         invariants,
@@ -352,7 +373,7 @@ pub(crate) fn value(f: &Field) -> Result<&Expr> {
     })
 }
 
-impl Chip {
+impl Chip<'_> {
     pub(crate) fn decl(&self, expr: &Expr) -> Result<(String, Decl)> {
         let ExprKind::Name(name) = &expr.kind else {
             return Err(Error::new(expr.span, "expected a name"));
@@ -374,6 +395,7 @@ impl Chip {
                 match decl.kind {
                     Kind::Pin => Ok(Line::pin_level(self.pads[decl.index])),
                     Kind::Reg => Ok(Line::logic(decl.index)),
+                    Kind::Event => Ok(Line::fire(decl.index)),
                     kind => Err(Error::new(
                         expr.span,
                         format!(

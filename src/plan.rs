@@ -150,7 +150,7 @@ impl Planner<'_, '_> {
             return Ok(json!({ "pin": pad }));
         }
         Ok(match self.design.env.eval(expr)? {
-            Value::Cycles(_) => json!(self.design.env.cycles(expr)?),
+            Value::Cycles(_) => json!(self.design.env.cycles(expr, "this would be {}", false)?),
             Value::Number(_) => json!(self.design.env.integer(expr)?),
             Value::Str(_) | Value::List(_) => json!(self.bytes(expr)?),
             Value::Hertz(_) => {
@@ -393,7 +393,11 @@ impl Planner<'_, '_> {
                 signal: duration,
                 next: false,
             } => {
-                json!({ "op": "wait", "cycles": self.design.env.cycles(duration)? })
+                let cycles = self
+                    .design
+                    .env
+                    .cycles(duration, "`wait` would last {}", false)?;
+                json!({ "op": "wait", "cycles": cycles })
             }
             _ => {
                 return Err(Error::new(

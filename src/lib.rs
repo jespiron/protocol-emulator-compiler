@@ -41,7 +41,7 @@ pub struct Build {
     pub image: Vec<u8>,
     /// Physical `uio` pad assigned to each pin.
     pub pins: BTreeMap<String, usize>,
-    /// Hardware used, as `(name, used, available)`.
+    /// Hardware used, as `(name, used, available)`; `memory` is in bytes.
     pub usage: Vec<(&'static str, usize, usize)>,
     /// Names of the program's tests, in source order.
     pub tests: Vec<String>,

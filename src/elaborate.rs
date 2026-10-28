@@ -132,7 +132,7 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
     let mut chip = Chip {
         env: Env {
             clock_hz,
-            consts: HashMap::new(),
+            ..Env::default()
         },
         decls: HashMap::new(),
         pads: Vec::new(),
@@ -176,6 +176,7 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
             Item::Clock(_) => {}
             Item::Const { name, value } => {
                 declare(name, None, &mut chip)?;
+                chip.env.defs.insert(name.text.clone(), value.span);
                 let value = chip.env.eval(value)?;
                 chip.env.consts.insert(name.text.clone(), value);
             }
@@ -284,13 +285,13 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
         .map(|&kind| {
             let (capacity, plural) = kind.capacity();
             (
-                plural.split(' ').next().unwrap_or(plural),
+                plural.split(" (").next().unwrap_or(plural),
                 counts[kind as usize],
                 capacity,
             )
         })
         .collect();
-    usage.push(("sram", image.len(), hardware::SRAM_BYTES));
+    usage.push(("memory", image.len(), hardware::SRAM_BYTES));
     Ok(Design {
         clock_hz,
         env: chip.env,
@@ -307,7 +308,7 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
 fn clock(expr: &Expr) -> Result<i128> {
     let probe = Env {
         clock_hz: 1,
-        consts: HashMap::new(),
+        ..Env::default()
     };
     match probe.eval(expr)? {
         Value::Hertz(hz) => hz.whole().filter(|&hz| hz > 0).ok_or_else(|| {
@@ -607,7 +608,11 @@ impl Chip<'_> {
         let every = value(every)?;
         let reload = Self::ranged(
             every,
-            self.env.cycles(every)? - 1,
+            self.env.cycles(
+                every,
+                &format!("timer `{}` would tick every {{}}", name.text),
+                true,
+            )? - 1,
             0,
             hardware::MAX_TIMER_CYCLES - 1,
             "`every` minus one cycle",
@@ -617,7 +622,11 @@ impl Chip<'_> {
                 let first = value(first)?;
                 Self::ranged(
                     first,
-                    self.env.cycles(first)? - 1,
+                    self.env.cycles(
+                        first,
+                        &format!("timer `{}`'s first tick would come after {{}}", name.text),
+                        false,
+                    )? - 1,
                     0,
                     hardware::MAX_TIMER_CYCLES - 1,
                     "`first` minus one cycle",

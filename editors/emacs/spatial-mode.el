@@ -131,7 +131,7 @@
       (,(concat (regexp-opt spatial--types 'symbols)
                 "\\(?:[ \t]*[^.(: \t\n]\\|[ \t]*$\\)")
        (1 font-lock-type-face))
-      (,(concat (regexp-opt '("data" "len") 'symbols) "[ \t]*(")
+      (,(concat (regexp-opt '("data" "len" "round") 'symbols) "[ \t]*(")
        (1 font-lock-builtin-face))
       (,(regexp-opt spatial--builtins 'symbols) . font-lock-builtin-face)
       (,(regexp-opt spatial--flags 'symbols) . 'spatial-property-face)

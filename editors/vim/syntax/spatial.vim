@@ -15,7 +15,7 @@ syn case match
 " and :syn keyword items beat every :syn match.
 syn match   spatialConstant     "\<\u[A-Z0-9_]*\>"
 syn match   spatialFunctionCall "\<\h\w*\ze\s*("
-syn match   spatialBuiltinFunc  "\<\%(data\|len\)\ze\s*("
+syn match   spatialBuiltinFunc  "\<\%(data\|len\|round\)\ze\s*("
 syn match   spatialBuiltin      "\<\%(host\|msb_first\|lsb_first\|even\|odd\)\>"
 syn match   spatialFlag         "\<\%(pulse\|lead\|end_on_sample\)\>"
 syn match   spatialMember       "\.\@1<=\h\w*"

@@ -340,14 +340,17 @@ impl Lowering<'_, '_> {
     /// Constants plus the scope's constant bindings, for evaluating fields and counts.
     fn env(&self, scope: &HashMap<String, Binding>) -> Env {
         let mut consts = self.chip.env.consts.clone();
+        let mut defs = self.chip.env.defs.clone();
         for (name, binding) in scope {
             if let Binding::Value(value) = binding {
                 consts.insert(name.clone(), value.clone());
+                defs.remove(name);
             }
         }
         Env {
             clock_hz: self.chip.env.clock_hz,
             consts,
+            defs,
         }
     }
 

@@ -147,7 +147,7 @@
     "builtins": {
       "patterns": [
         {
-          "match": "\\b(data|len)\\b(?=\\s*\\()",
+          "match": "\\b(data|len|round)\\b(?=\\s*\\()",
           "name": "support.function.builtin.spatial"
         },
         {

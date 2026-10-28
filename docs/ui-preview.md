@@ -12,8 +12,8 @@ Checking constraints…
 ```
 
 There are no borders, slogans, progress bars, percentages, or decorative task
-lists. A full rotation takes one minute. Short real commands must never wait for
-an animation to finish.
+lists. A full rotation takes about 2.22 seconds (20/9 seconds), rendered at about
+30 frames per second. Short real commands must never wait for an animation to finish.
 
 ## Try it
 

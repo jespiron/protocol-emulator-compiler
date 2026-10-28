@@ -18,8 +18,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-const FRAME_TIME: Duration = Duration::from_millis(80);
-const TURN_SECONDS: f32 = 60.0;
+const FRAME_TIME: Duration = Duration::from_millis(33);
+const TURN_SECONDS: f32 = 20.0 / 9.0;
 const BACKGROUND: Color = Color::Rgb(16, 17, 32);
 const LAVENDER: Color = Color::Rgb(181, 157, 255);
 const ICE: Color = Color::Rgb(123, 207, 246);
@@ -381,17 +381,17 @@ mod tests {
         assert_eq!(pixel.depth, 1.0);
     }
     #[test]
-    fn rotation_is_slow_and_pause_preserves_the_frame() {
+    fn rotation_takes_twenty_ninths_seconds_and_pause_preserves_the_frame() {
         let mut state = Preview::default();
         let start = state.angle();
         state.advance(Duration::from_secs(1));
-        assert!((state.angle() - start - TAU / 60.0).abs() < 1e-6);
+        assert!((state.angle() - start - TAU * 9.0 / 20.0).abs() < 1e-6);
         state.handle(KeyCode::Char(' '), KeyModifiers::NONE);
         let paused = state.angle();
         state.advance(Duration::from_secs(30));
         assert_eq!(state.angle(), paused);
         state.handle(KeyCode::Char(' '), KeyModifiers::NONE);
-        state.advance(Duration::from_secs(59));
+        state.advance(Duration::from_secs_f64(20.0 / 9.0) - Duration::from_secs(1));
         assert!((state.angle() - start).abs() < 1e-6);
     }
     #[test]

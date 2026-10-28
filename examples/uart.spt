@@ -1,0 +1,29 @@
+// UART, 8N1, full duplex: one start bit (0), eight data bits LSB first, one stop bit (1).
+
+clock 50 MHz
+const BIT = 64 cycles   // 781 250 baud
+
+pin tx: out = sender.out
+pin rx: in
+
+// Transmit. The bit clock runs only while a frame is on the wire; the first
+// tick lands two cycles early to cover the pulse and pin registers.
+timer tx_bit { every: BIT, first: BIT - 2 cycles, pulse, run: sender.busy until sender.done }
+shifter sender {
+    frame: [0, data(8), 1],
+    idle: 1,
+    shift: tx_bit.tick,
+}
+
+// Receive. A falling edge (the start bit) starts the bit clock, which then
+// samples the middle of every bit, net of the input synchronizer.
+timer rx_bit { every: BIT, first: BIT / 2 - 1 cycles, pulse, run: rx.fall until receiver.done }
+shifter receiver {
+    frame: [0, data(8), 1],
+    start: rx.fall,
+    shift: rx_bit.tick,
+    sample: rx at rx_bit.tick,
+}
+
+export stream send: host -> sender
+export stream recv: receiver -> host

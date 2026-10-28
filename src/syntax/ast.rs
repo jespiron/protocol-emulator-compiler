@@ -36,6 +36,8 @@ pub(crate) enum Item {
     Stream { name: Name, from: Expr, to: Expr },
     /// `test "loopback" { ... }`
     Test { name: Name, body: Vec<Stmt> },
+    /// `always "cs idles high" { expr }`
+    Always { name: Name, condition: Expr },
 }
 
 /// `name: value`, or a bare flag such as `pulse`.

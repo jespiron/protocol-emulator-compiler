@@ -186,12 +186,19 @@ impl Parser {
                 name: self.string()?,
                 body: self.block()?,
             },
+            "always" => {
+                let name = self.string()?;
+                self.expect("{")?;
+                let condition = self.expr()?;
+                self.expect("}")?;
+                Item::Always { name, condition }
+            }
             _ => {
                 return Err(Error::new(
                     keyword.span,
                     format!(
                         "expected a declaration (clock, const, pin, timer, shifter, counter, \
-                         reg, export or test), found `{}`",
+                         reg, export, test or always), found `{}`",
                         keyword.text
                     ),
                 ));

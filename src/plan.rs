@@ -1,4 +1,4 @@
-//! Turn `test` blocks into a plan the simulator follows.
+//! Turn `test` blocks and `always` invariants into a plan the simulator follows.
 //!
 //! Peers are opaque here: `attach uart_device(from_chip: tx, bit: BIT)` becomes
 //! a peer kind plus arguments, with pins resolved to pads and durations to
@@ -31,6 +31,13 @@ pub(crate) fn plan(design: &Design<'_>, source: &str) -> Result<Json> {
             "steps": planner.steps,
         }));
     }
+    let invariants = design
+        .invariants
+        .iter()
+        .map(|(name, condition)| {
+            Ok(json!({ "name": name.text, "line": line_of(name.span), "check": invariant(design, condition)? }))
+        })
+        .collect::<Result<Vec<_>>>()?;
     let streams: Map<String, Json> = design
         .streams
         .iter()
@@ -51,7 +58,54 @@ pub(crate) fn plan(design: &Design<'_>, source: &str) -> Result<Json> {
         "pins": design.pins,
         "streams": streams,
         "tests": tests,
+        "invariants": invariants,
     }))
+}
+
+/// An `always` condition as a tree the simulator evaluates every cycle.
+fn invariant(design: &Design<'_>, expr: &Expr) -> Result<Json> {
+    let pin = |e: &Expr| match &e.kind {
+        ExprKind::Name(name) => design.pins.get(name).copied(),
+        _ => None,
+    };
+    let sub = |e: &Expr| invariant(design, e);
+    let not_a_pin = |label: String| {
+        Error::new(expr.span, "can only write an `always` rule about a pin").label(label)
+    };
+    Ok(match &expr.kind {
+        ExprKind::Int(b @ (0 | 1)) => json!({ "const": b }),
+        ExprKind::Name(name) => match pin(expr) {
+            Some(pad) => json!({ "pin": pad }),
+            None => return Err(not_a_pin(format!("`{name}` is not a pin"))),
+        },
+        ExprKind::Field(object, field) => match (pin(object), field.text.as_str()) {
+            (Some(pad), edge @ ("changed" | "rise" | "fall")) => {
+                json!({ "edge": edge, "pin": pad })
+            }
+            (Some(_), _) => {
+                return Err(not_a_pin(
+                    "a pin only has `.changed`, `.rise` and `.fall`".to_owned(),
+                ));
+            }
+            (None, field) => {
+                let name = match &object.kind {
+                    ExprKind::Name(name) => format!("`{name}.{field}`"),
+                    _ => "this".to_owned(),
+                };
+                return Err(not_a_pin(format!("{name} is not a pin")));
+            }
+        },
+        ExprKind::Unary("!", a) => json!({ "op": "not", "a": sub(a)? }),
+        ExprKind::Binary(op @ ("&&" | "||" | "==" | "!=" | "implies"), a, b) => {
+            json!({ "op": op, "a": sub(a)?, "b": sub(b)? })
+        }
+        _ => {
+            return Err(Error::new(
+                expr.span,
+                "invariants use pins, 0, 1, !, &&, ||, ==, != and implies",
+            ));
+        }
+    })
 }
 
 struct Planner<'d, 'a> {

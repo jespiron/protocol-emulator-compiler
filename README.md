@@ -17,6 +17,7 @@ spatial run --test
 | `spatial check` | Check the program fits the chip |
 | `spatial build` | Write `target/image.bin` |
 | `spatial run --test` | Build, then run every `test` in RTL simulation (`--test=NAME` for one) |
+| `spatial run` | Build, then type test statements at the program on a simulated chip |
 
 Commands find the nearest `main.spt`, or take a file: `spatial run --test examples/spi.spt`.
 Running tests also needs [uv](https://docs.astral.sh/uv/), git, make, a C++

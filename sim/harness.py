@@ -218,92 +218,152 @@ class Invariants:
             before, cycle = now, cycle + 1
 
 
-async def run_test(dut, plan, test, period_ps):
-    await reset_top(dut)
-    await load_program(dut, plan["image"])
-    calls = plan["calls"]
-    channels = {s["channel"] for s in plan["streams"].values() if s["direction"] == "from_chip"}
-    if calls["channel"] is not None:
-        channels.add(calls["channel"])
-        channels |= {f["result"]["channel"] for f in calls["functions"].values() if isinstance(f["result"], dict)}
-    bus = Bus(dut, test["wires"])
-    host = Host(dut, channels)
-    invariants = Invariants(dut, bus, plan["invariants"])
-    attached = {}
-    for spec in test["peers"]:
-        peer = peers.attach(spec, bus, dut)
-        if isinstance(peer, str):
-            return {"line": spec["line"], "message": peer}, 0
-        attached[spec["name"]] = peer
-    coroutines = [bus.run(), host.drain()] + [c for peer in attached.values() for c in peer.tasks()]
-    tasks = [cocotb.start_soon(c) for c in coroutines]
+class Session:
+    """A chip, its wires, its peers and the host, from reset onward."""
 
-    def check():
-        for name, peer in attached.items():
+    def __init__(self, dut, plan, period_ps):
+        self.dut, self.plan, self.period_ps = dut, plan, period_ps
+        self.calls = plan["calls"]
+        channels = {s["channel"] for s in plan["streams"].values() if s["direction"] == "from_chip"}
+        if self.calls["channel"] is not None:
+            channels.add(self.calls["channel"])
+            channels |= {f["result"]["channel"] for f in self.calls["functions"].values() if isinstance(f["result"], dict)}
+        self.bus = Bus(dut, [])
+        self.host = Host(dut, channels)
+        self.invariants = Invariants(dut, self.bus, plan["invariants"])
+        self.peers = {}
+        self.tasks = []
+
+    async def start(self):
+        await reset_top(self.dut)
+        await load_program(self.dut, self.plan["image"])
+        self.tasks = [cocotb.start_soon(c) for c in (self.bus.run(), self.host.drain())]
+        async with self.host.link:
+            await start_engine(self.dut)
+        self.tasks.append(cocotb.start_soon(self.invariants.run()))
+
+    def connect(self, wires, specs):
+        """Add wires and attach peers not attached yet; return an error or None."""
+        self.bus.wires.update({to: source for source, to in wires})
+        for spec in specs:
+            if spec["name"] in self.peers:
+                continue
+            peer = peers.attach(spec, self.bus, self.dut)
+            if isinstance(peer, str):
+                return {"line": spec["line"], "message": peer}
+            self.peers[spec["name"]] = peer
+            self.tasks += [cocotb.start_soon(c) for c in peer.tasks()]
+        return None
+
+    def check(self):
+        for name, peer in self.peers.items():
             if peer.problems:
                 raise Failure(f"`{name}`: {peer.problems[0]}")
-        for channel, buffer in host.received.items():
-            if channel != calls["channel"] and any(err for _, _, err in buffer):
+        for channel, buffer in self.host.received.items():
+            if channel != self.calls["channel"] and any(err for _, _, err in buffer):
                 raise Failure(f"channel {channel} received a byte marked as an error (wrong stop or parity bit)")
-        if invariants.problems:
-            invariant, cycle = invariants.problems[0]
+        if self.invariants.problems:
+            invariant, cycle = self.invariants.problems[0]
             raise Failure(f"always \"{invariant['name']}\" (line {invariant['line']}) broke at cycle {cycle}")
 
-    async with host.link:
-        await start_engine(dut)
-    tasks.append(cocotb.start_soon(invariants.run()))
+    async def step(self, step):
+        """Run one step; return the bytes it produced when nothing was expected of them."""
+        dut, plan, host = self.dut, self.plan, self.host
+        target = step.get("target", {})
+        peer = self.peers.get(target.get("peer"))
+        output = None
+        if step["op"] == "write" and peer:
+            peer.write(step["bytes"])
+        elif step["op"] == "write":
+            await host.write(plan["streams"][target["stream"]]["channel"], step["bytes"])
+        elif step["op"] == "read":
+            name = target.get("peer") or target["stream"]
+            count = step["count"]
+            if peer:
+                buffer = peer.received
+                values = lambda: list(buffer)
+            else:
+                buffer = host.received[plan["streams"][name]["channel"]]
+                values = lambda: [b for b, _, _ in buffer]
+            await wait_for(dut, lambda: len(buffer) >= count, lambda: f"`{name}` received {fmt(values())}, then nothing", self.check)
+            output = values()[:count]
+            del buffer[:count]
+        elif step["op"] == "call":
+            output, failed = await call(dut, host, self.calls, step, self.check)
+            if "fails" in step and failed != step["fails"]:
+                outcome = f'failed with "{failed}"' if failed else "succeeded"
+                raise Failure(f"expected `{step['function']}` to fail with \"{step['fails']}\", but it {outcome}")
+            if "fails" not in step and failed:
+                raise Failure(f"`{step['function']}` failed: {failed}")
+        elif step["op"] == "wait":
+            await ClockCycles(dut.clk, step["cycles"])
+        self.check()
+        if "expect" in step:
+            if output != step["expect"]:
+                raise Failure(f"expected {fmt(step['expect'])}, got {fmt(output)}")
+            return None
+        return output
+
+    def stop(self):
+        for task in self.tasks:
+            task.cancel()
+
+
+async def run_test(dut, plan, test, period_ps):
+    session = Session(dut, plan, period_ps)
+    await session.start()
+    error = session.connect(test["wires"], test["peers"])
+    if error:
+        session.stop()
+        return error, 0
     started = get_sim_time("ps")
     line = test["line"]
     try:
         for step in test["steps"]:
             line = step["line"]
-            target = step.get("target", {})
-            peer = attached.get(target.get("peer"))
-            if step["op"] == "write" and peer:
-                peer.write(step["bytes"])
-            elif step["op"] == "write":
-                await host.write(plan["streams"][target["stream"]]["channel"], step["bytes"])
-            elif step["op"] == "read":
-                name = target.get("peer") or target["stream"]
-                count = len(step["expect"])
-                if peer:
-                    buffer = peer.received
-                    values = lambda: list(buffer)
-                else:
-                    buffer = host.received[plan["streams"][name]["channel"]]
-                    values = lambda: [b for b, _, _ in buffer]
-                await wait_for(dut, lambda: len(buffer) >= count, lambda: f"`{name}` received {fmt(values())}, then nothing", check)
-                got = values()[:count]
-                del buffer[:count]
-                if got != step["expect"]:
-                    raise Failure(f"expected {fmt(step['expect'])}, got {fmt(got)}")
-            elif step["op"] == "call":
-                result, failed = await call(dut, host, calls, step, check)
-                if "fails" in step and failed != step["fails"]:
-                    outcome = f'failed with "{failed}"' if failed else "succeeded"
-                    raise Failure(f"expected `{step['function']}` to fail with \"{step['fails']}\", but it {outcome}")
-                if "fails" not in step and failed:
-                    raise Failure(f"`{step['function']}` failed: {failed}")
-                if "expect" in step and result != step["expect"]:
-                    raise Failure(f"expected {fmt(step['expect'])}, got {fmt(result)}")
-            elif step["op"] == "wait":
-                await ClockCycles(dut.clk, step["cycles"])
-            check()
+            await session.step(step)
         error = None
     except Failure as failure:
         error = {"line": line, "message": str(failure)}
     finally:
-        for task in tasks:
-            task.cancel()
+        session.stop()
     return error, int(get_sim_time("ps") - started) // period_ps
+
+
+async def console(dut, plan, period_ps, requests_path, replies_path):
+    """Serve one request per line: {"wires", "peers", "steps"} -> {"outputs"} or {"error"}.
+    The simulation waits while no request is pending, so chip time stands still
+    between commands."""
+    session = Session(dut, plan, period_ps)
+    await session.start()
+    with open(requests_path) as requests, open(replies_path, "w") as replies:
+        replies.write(json.dumps({"ready": True}) + "\n")
+        replies.flush()
+        for request in requests:
+            request = json.loads(request)
+            started = get_sim_time("ps")
+            reply = {"error": session.connect(request["wires"], request["peers"])}
+            if not reply["error"]:
+                try:
+                    reply["outputs"] = [await session.step(step) for step in request["steps"]]
+                except Failure as failure:
+                    reply["error"] = {"message": str(failure)}
+            reply["cycles"] = int(get_sim_time("ps") - started) // period_ps
+            replies.write(json.dumps(reply) + "\n")
+            replies.flush()
+    session.stop()
 
 
 @cocotb.test()
 async def spatial(dut):
     plan = json.loads(Path(os.environ["SPATIAL_PLAN"]).read_text())
-    only = os.environ.get("SPATIAL_ONLY")
     period_ps = 10**12 // plan["clock_hz"]
     cocotb.start_soon(Clock(dut.clk, period_ps, unit="ps").start())
+    if os.environ.get("SPATIAL_CONSOLE"):
+        requests_path, replies_path = os.environ["SPATIAL_CONSOLE"].split(os.pathsep)
+        await console(dut, plan, period_ps, requests_path, replies_path)
+        return
+    only = os.environ.get("SPATIAL_ONLY")
     results = []
     for test in plan["tests"]:
         if not only or test["name"] == only:

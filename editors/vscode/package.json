@@ -1,0 +1,36 @@
+{
+  "name": "spatial-syntax",
+  "displayName": "Spatial (.spt) Syntax",
+  "description": "Syntax highlighting for the Spatial protocol-chip description language.",
+  "version": "0.1.0",
+  "publisher": "standardkernel",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "spatial",
+        "aliases": [
+          "Spatial",
+          "spatial"
+        ],
+        "extensions": [
+          ".spt"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "spatial",
+        "scopeName": "source.spatial",
+        "path": "./syntaxes/spatial.tmLanguage.json"
+      }
+    ]
+  }
+}

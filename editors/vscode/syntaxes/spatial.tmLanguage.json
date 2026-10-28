@@ -1,0 +1,183 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Spatial",
+  "scopeName": "source.spatial",
+  "fileTypes": ["spt"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#pin-decl" },
+    { "include": "#event-decl" },
+    { "include": "#named-decl" },
+    { "include": "#keywords" },
+    { "include": "#quantity" },
+    { "include": "#number" },
+    { "include": "#member" },
+    { "include": "#property" },
+    { "include": "#types" },
+    { "include": "#builtins" },
+    { "include": "#constant" },
+    { "include": "#call" },
+    { "include": "#operators" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comment": {
+      "match": "(//).*$",
+      "name": "comment.line.double-slash.spatial",
+      "captures": {
+        "1": { "name": "punctuation.definition.comment.spatial" }
+      }
+    },
+    "string": {
+      "match": "(\")[^\"\\n]*(\")",
+      "name": "string.quoted.double.spatial",
+      "captures": {
+        "1": { "name": "punctuation.definition.string.begin.spatial" },
+        "2": { "name": "punctuation.definition.string.end.spatial" }
+      }
+    },
+    "pin-decl": {
+      "match": "\\b(pin)\\s+([A-Za-z_]\\w*)\\s*(?:(@)\\s*(\\[[^\\]]*\\]|[A-Za-z_]\\w*)\\s*)?(:)\\s*(in|out|open_drain)\\b",
+      "captures": {
+        "1": { "name": "keyword.declaration.spatial" },
+        "2": { "name": "entity.name.type.spatial" },
+        "3": { "name": "keyword.operator.spatial" },
+        "4": { "patterns": [{ "include": "$self" }] },
+        "5": { "name": "punctuation.separator.key-value.spatial" },
+        "6": { "name": "storage.modifier.pin-mode.spatial" }
+      }
+    },
+    "event-decl": {
+      "begin": "\\b(event|flag)\\b",
+      "beginCaptures": {
+        "1": { "name": "keyword.declaration.spatial" }
+      },
+      "end": "(?=//)|$",
+      "patterns": [
+        { "match": "[A-Za-z_]\\w*", "name": "entity.name.type.spatial" },
+        { "match": ",", "name": "punctuation.separator.comma.spatial" }
+      ]
+    },
+    "named-decl": {
+      "patterns": [
+        {
+          "match": "\\b(fn)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.spatial" },
+            "2": { "name": "entity.name.function.spatial" }
+          }
+        },
+        {
+          "match": "\\b(pin|timer|shifter|counter|crc|reg|stream)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.spatial" },
+            "2": { "name": "entity.name.type.spatial" }
+          }
+        },
+        {
+          "match": "\\b(const)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.spatial" },
+            "2": { "name": "variable.other.constant.spatial" }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "match": "\\b(clock|export|test|always|event|flag|pin|timer|shifter|counter|crc|reg|const|stream|fn)\\b(?!\\.)",
+          "name": "keyword.declaration.spatial"
+        },
+        {
+          "match": "\\b(fire|wait|next|repeat|for|in|if|else|reply|fails|fail|expect|attach|as|wire)\\b",
+          "name": "keyword.control.spatial"
+        },
+        {
+          "match": "\\b(until|at|implies)\\b",
+          "name": "keyword.operator.expression.spatial"
+        },
+        {
+          "match": "\\b(via|init|on)\\b",
+          "name": "keyword.other.spatial"
+        }
+      ]
+    },
+    "quantity": {
+      "match": "\\b(0x[0-9A-Fa-f_]+|0b[01_]+|[0-9][0-9_]*)\\s+(cycles|cycle|ns|us|ms|s|Hz|kHz|MHz)\\b",
+      "captures": {
+        "1": { "name": "constant.numeric.spatial" },
+        "2": { "name": "constant.language.unit.spatial" }
+      }
+    },
+    "number": {
+      "match": "\\b(0x[0-9A-Fa-f_]+|0b[01_]+|[0-9][0-9_]*)\\b",
+      "name": "constant.numeric.spatial"
+    },
+    "member": {
+      "patterns": [
+        {
+          "match": "(\\.)([A-Za-z_]\\w*(?=\\s*\\()|set(?=\\s*\\{))",
+          "captures": {
+            "1": { "name": "punctuation.accessor.spatial" },
+            "2": { "name": "entity.name.function.member.spatial" }
+          }
+        },
+        {
+          "match": "(\\.)([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "punctuation.accessor.spatial" },
+            "2": { "name": "variable.other.property.spatial" }
+          }
+        }
+      ]
+    },
+    "property": {
+      "match": "\\b([A-Za-z_]\\w*)\\s*(:)",
+      "captures": {
+        "1": { "name": "variable.other.property.spatial" },
+        "2": { "name": "punctuation.separator.key-value.spatial" }
+      }
+    },
+    "types": {
+      "match": "(?<!\\bvia\\s)\\b(bits|bit|u7|u8|bytes)\\b(?!\\s*[.(:])",
+      "name": "storage.type.spatial"
+    },
+    "builtins": {
+      "patterns": [
+        {
+          "match": "\\b(data|len)\\b(?=\\s*\\()",
+          "name": "support.function.builtin.spatial"
+        },
+        {
+          "match": "\\b(host|msb_first|lsb_first|even|odd)\\b",
+          "name": "constant.language.spatial"
+        },
+        {
+          "match": "\\b(pulse|lead|end_on_sample)\\b",
+          "name": "variable.other.property.spatial"
+        }
+      ]
+    },
+    "constant": {
+      "match": "\\b[A-Z][A-Z0-9_]*\\b",
+      "name": "variable.other.constant.spatial"
+    },
+    "call": {
+      "match": "\\b([A-Za-z_]\\w*)(?=\\s*\\()",
+      "name": "entity.name.function.call.spatial"
+    },
+    "operators": {
+      "match": "->|==|!=|<=|>=|&&|\\|\\||<<|>>|\\.\\.=|[!+\\-*/&|^<>=@:]",
+      "name": "keyword.operator.spatial"
+    },
+    "punctuation": {
+      "patterns": [
+        { "match": ",", "name": "punctuation.separator.comma.spatial" },
+        { "match": ";", "name": "punctuation.terminator.spatial" },
+        { "match": "[{}\\[\\]()]", "name": "punctuation.section.brackets.spatial" }
+      ]
+    }
+  }
+}

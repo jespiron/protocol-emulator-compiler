@@ -17,7 +17,7 @@ use std::{
     time::Duration,
 };
 
-const FILES: [(&str, &str); 10] = [
+const FILES: [(&str, &str); 11] = [
     ("pyproject.toml", include_str!("../sim/pyproject.toml")),
     ("uv.lock", include_str!("../sim/uv.lock")),
     ("run.py", include_str!("../sim/run.py")),
@@ -26,6 +26,7 @@ const FILES: [(&str, &str); 10] = [
         "peers/__init__.py",
         include_str!("../sim/peers/__init__.py"),
     ),
+    ("peers/swd.py", include_str!("../sim/peers/swd.py")),
     ("peers/jtag.py", include_str!("../sim/peers/jtag.py")),
     ("peers/i2c.py", include_str!("../sim/peers/i2c.py")),
     ("peers/spi.py", include_str!("../sim/peers/spi.py")),

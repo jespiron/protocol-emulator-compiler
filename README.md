@@ -36,6 +36,8 @@ The language reference is the crate documentation: `cargo doc --open`.
 
 Editor highlighting for VS Code, Vim, Neovim, Emacs, Helix and Zed: [`editors/`](editors/README.md).
 
+- [`examples/jtag.spt`](examples/jtag.spt): JTAG scans against a 16-state TAP, including IDCODE and IR/DR register access.
+
 ## Layout
 
 - `src/`: the compiler and the `spatial` command.

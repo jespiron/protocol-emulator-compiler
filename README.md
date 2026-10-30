@@ -51,20 +51,29 @@ Editor highlighting for VS Code, Vim, Neovim, Emacs, Helix and Zed: [`editors/`]
 
 ## Configuration contexts
 
-`contexts <level>` selects the chip's existing two configuration banks. Shared
-pin/tile declarations initialize both banks; `context 0` and `context 1` override
-settings of those same physical resources, without allocating extra hardware:
+`contexts(select: level)` groups both configurations in one place. The flag's
+initializer makes the starting selection explicit:
 
 ```spatial
-flag phase
-contexts phase
+flag phase = 0
 pin tx: out = sender.out
-shifter sender { frame: [0, data(8), 1], idle: 1, shift: bit.tick }
 timer bit { every: 64 cycles, first: 62 cycles, pulse, run: sender.busy until sender.done }
-context 1 {
-    shifter sender { frame: [0, data(8), even, 1] }
+contexts(select: phase) {
+    context 0 {
+        shifter sender { frame: [0, data(8), 1], idle: 1, shift: bit.tick }
+    }
+    context 1 {
+        shifter sender { frame: [0, data(8), even, 1], idle: 1, shift: bit.tick }
+    }
 }
 ```
+
+Both `context 0` and `context 1` are required, in either order. Context 0 can
+declare the physical resources; context 1 configures those same resources
+without allocating extra hardware. Declarations outside the block are shared
+by both configurations. Flags accept `= 0` or `= 1`; existing declarations
+without an initializer continue to start at zero. An external pin selector's
+initial value comes from the external signal, not the flag initialization.
 
 The selector may be a pin level, controller flag, or another fabric level. The
 hardware changes contexts together, two clocks after the selecting level
@@ -73,15 +82,17 @@ does not reset it. Switch framing between transactions unless the protocol is
 designed for a mid-transfer change.
 
 This first version permits overrides of existing **pins, timers, shifters and
-counters**. Omitted tile fields inherit the shared declaration. Pin overrides
+counters**. Omitted tile fields inherit the shared declaration (or context 0 when the
+resource is declared there). Pin overrides
 specify the complete mode/source; pad assignments remain shared. CRC and byte
 tiles have no hardware context banks. Logic-cell context overrides and
 context-specific runtime writes are not exposed yet. Runtime `.set`, `.drive`
 and `.release` operations update both banks; `.drive()` restores the shared pin
-declaration in both banks.
+declaration (or its context 0 declaration) in both banks.
 
 See [`examples/contexts.spt`](examples/contexts.spt) for 8N1/8E1 UART framing
-and paired pin switching. The UART test peer accepts optional `parity: "even"`
+and paired pin switching, and [`examples/contexts_initial_one.spt`](examples/contexts_initial_one.spt)
+for starting directly in context 1. The UART test peer accepts optional `parity: "even"`
 or `parity: "odd"`; its default remains 8N1. Run:
 
 ```sh

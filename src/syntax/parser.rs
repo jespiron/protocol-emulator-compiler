@@ -110,7 +110,81 @@ impl Parser {
     pub(crate) fn file(&mut self) -> Result<Vec<Item>> {
         let mut items = Vec::new();
         while *self.peek() != Kind::Eof {
-            items.push(self.item()?);
+            if self.is("contexts") {
+                items.extend(self.context_group()?);
+            } else {
+                if self.is("context") {
+                    return Err(self.unexpected(
+                        "`contexts(select: level) { context 0 { ... } context 1 { ... } }`",
+                    ));
+                }
+                items.push(self.item()?);
+            }
+        }
+        // Resources introduced in context 0 are the same physical resources
+        // referenced in context 1. Lift their declarations for name allocation;
+        // both context blocks remain explicit configuration writes.
+        let mut names = std::collections::HashSet::new();
+        for item in &items {
+            if let Item::Pin { name, .. } | Item::Tile { name, .. } = item {
+                names.insert(name.text.clone());
+            }
+        }
+        let mut declarations = Vec::new();
+        for item in &items {
+            if let Item::Context { index, body } = item
+                && matches!(index.kind, ExprKind::Int(0))
+            {
+                for resource in body {
+                    if let Item::Pin { name, .. } | Item::Tile { name, .. } = resource
+                        && names.insert(name.text.clone())
+                    {
+                        declarations.push(resource.clone());
+                    }
+                }
+            }
+        }
+        declarations.extend(items);
+        Ok(declarations)
+    }
+
+    fn context_group(&mut self) -> Result<Vec<Item>> {
+        self.expect("contexts")?;
+        self.expect("(")?;
+        self.expect("select")?;
+        self.expect(":")?;
+        let selector = self.expr()?;
+        self.expect(")")?;
+        self.expect("{")?;
+        let mut items = vec![Item::Contexts(selector)];
+        let mut seen = [false; 2];
+        while !self.eat("}") {
+            if !self.is("context") {
+                return Err(self.unexpected("`context 0 { ... }` or `context 1 { ... }`"));
+            }
+            let item = self.item()?;
+            let Item::Context { index, .. } = &item else {
+                unreachable!()
+            };
+            let bank = match index.kind {
+                ExprKind::Int(0) => 0,
+                ExprKind::Int(1) => 1,
+                _ => return Err(Error::new(index.span, "the context must be 0 or 1")),
+            };
+            if seen[bank] {
+                return Err(Error::new(
+                    index.span,
+                    format!("context {bank} is already defined"),
+                ));
+            }
+            seen[bank] = true;
+            items.push(item);
+        }
+        if !seen.into_iter().all(|present| present) {
+            return Err(Error::new(
+                self.previous(),
+                "a contexts block must include both context 0 and context 1",
+            ));
         }
         Ok(items)
     }
@@ -118,7 +192,6 @@ impl Parser {
     fn item(&mut self) -> Result<Item> {
         let keyword = self.name()?;
         Ok(match keyword.text.as_str() {
-            "contexts" => Item::Contexts(self.expr()?),
             "context" => {
                 let index = self.expr()?;
                 self.expect("{")?;
@@ -187,16 +260,28 @@ impl Parser {
                     value: self.expr()?,
                 }
             }
-            "event" | "flag" => {
+            "event" => {
                 let mut names = vec![self.name()?];
                 while self.eat(",") {
                     names.push(self.name()?);
                 }
-                if keyword.text == "event" {
-                    Item::Event(names)
-                } else {
-                    Item::Flag(names)
+                Item::Event(names)
+            }
+            "flag" => {
+                let mut flags = Vec::new();
+                loop {
+                    let name = self.name()?;
+                    let init = if self.eat("=") {
+                        Some(self.expr()?)
+                    } else {
+                        None
+                    };
+                    flags.push((name, init));
+                    if !self.eat(",") {
+                        break;
+                    }
                 }
+                Item::Flag(flags)
             }
             "export" if self.eat("stream") => {
                 let name = self.name()?;

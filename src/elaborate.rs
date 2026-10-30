@@ -209,14 +209,14 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
                 chip.tiles.insert(name.text.clone(), fields);
             }
             Item::Reg { name, .. } => declare(name, Some(Kind::Reg), &mut chip)?,
-            Item::Event(list) | Item::Flag(list) => {
-                let kind = if matches!(item, Item::Event(_)) {
-                    Kind::Event
-                } else {
-                    Kind::Flag
-                };
+            Item::Event(list) => {
                 for name in list {
-                    declare(name, Some(kind), &mut chip)?;
+                    declare(name, Some(Kind::Event), &mut chip)?;
+                }
+            }
+            Item::Flag(list) => {
+                for (name, _) in list {
+                    declare(name, Some(Kind::Flag), &mut chip)?;
                 }
             }
             Item::Stream { name, .. } | Item::Fn { name, .. } => declare(name, None, &mut chip)?,
@@ -264,7 +264,7 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
     {
         return Err(Error::new(
             index.span,
-            "a context override needs `contexts <level>`",
+            "a context override needs a `contexts(select: level)` block",
         ));
     }
     if !selectors.is_empty() {
@@ -380,6 +380,21 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
         // Runtime .set/.drive/.release operations update both banks.
         asm.config(config::CONTEXT_WRITE, 3);
         asm.config(config::CONTEXT_SELECT, u16::from(line.0) | 0x40);
+    }
+    let mut flag_bits = 0u16;
+    let mut initialized = false;
+    for item in items {
+        if let Item::Flag(flags) = item {
+            for (name, init) in flags {
+                if let Some(expr) = init {
+                    flag_bits |= chip.bit(expr)? << chip.decls[&name.text].index;
+                    initialized = true;
+                }
+            }
+        }
+    }
+    if initialized {
+        asm.config(config::FLAGS, flag_bits);
     }
     asm.config(config::ARM, 1);
     let exports = control::lower(&chip, &functions, &mut asm)?;

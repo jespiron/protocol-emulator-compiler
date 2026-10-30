@@ -3,18 +3,20 @@ clock 50 MHz
 const BIT = 64 cycles
 pin tx: out = sender.out
 pin unused_rx: in
-// Complementary pins model an atomic pair of routing choices.
-pin left: out = 0
-pin right: out = 1
-flag use_even
-contexts use_even
+flag use_even = 0
 
 timer bit { every: BIT, first: BIT - 2 cycles, pulse, run: sender.busy until sender.done }
-shifter sender { frame: [0, data(8), 1], idle: 1, shift: bit.tick }
-context 1 {
-    pin left: out = 1
-    pin right: out = 0
-    shifter sender { frame: [0, data(8), even, 1] }
+contexts(select: use_even) {
+    context 0 {
+        pin left: out = 0
+        pin right: out = 1
+        shifter sender { frame: [0, data(8), 1], idle: 1, shift: bit.tick }
+    }
+    context 1 {
+        pin left: out = 1
+        pin right: out = 0
+        shifter sender { frame: [0, data(8), even, 1], idle: 1, shift: bit.tick }
+    }
 }
 always "paired pin contexts change together" {
     (left.changed || right.changed) implies left != right
@@ -24,12 +26,12 @@ export stream send: host -> sender
 export fn even_mode() { flags(use_even) }
 export fn normal_mode() { flags() }
 
-test "shared defaults initialize context zero" {
+test "explicit zero initializes 8N1" {
     attach uart_device(from_chip: tx, to_chip: unused_rx, bit: BIT) as terminal
     send.write([0x00, 0x55, 0xFF])
     expect terminal.read(3) == [0x00, 0x55, 0xFF]
 }
-test "context one overrides framing but inherits timing and routing" {
+test "context one selects 8E1 on the same shifter" {
     attach uart_device(from_chip: tx, to_chip: unused_rx, bit: BIT, parity: "even") as terminal
     even_mode()
     send.write([0x00, 0x01, 0xFF])

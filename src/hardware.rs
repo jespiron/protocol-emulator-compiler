@@ -12,6 +12,11 @@ pub(crate) const COUNTERS: usize = 2;
 pub(crate) const LOGIC_CELLS: usize = 8;
 /// Controller `FIRE` pulse lines.
 pub(crate) const EVENTS: usize = 2;
+/// Controller flag levels.
+pub(crate) const FLAGS: usize = 2;
+pub(crate) const CRCS: usize = 1;
+/// Widest CRC register.
+pub(crate) const MAX_CRC_BITS: i128 = 32;
 pub(crate) const SRAM_BYTES: usize = 1024;
 /// Shifter word length range.
 pub(crate) const MAX_WORD_BITS: i128 = 16;
@@ -84,6 +89,11 @@ impl Line {
     pub(crate) fn counter_reached(k: usize) -> Line {
         Line(50 + k as u8)
     }
+    pub(crate) const CRC_OUT: Line = Line(52);
+    pub(crate) const CRC_OK: Line = Line(53);
+    pub(crate) fn flag(k: usize) -> Line {
+        Line(54 + k as u8)
+    }
     pub(crate) fn logic(k: usize) -> Line {
         Line(56 + k as u8)
     }
@@ -106,6 +116,11 @@ pub(crate) mod config {
     pub(crate) fn logic(k: usize, register: u8) -> u8 {
         0x40 + 4 * k as u8 + register
     }
+    pub(crate) fn crc(register: u8) -> u8 {
+        0x28 + register
+    }
+    /// Controller flags, one bit each.
+    pub(crate) const FLAGS: u8 = 0x30;
     /// Writing 1 goes live; tiles and pins stay idle until then.
     pub(crate) const ARM: u8 = 0x31;
 }

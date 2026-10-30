@@ -1,0 +1,75 @@
+// Low-speed USB packet transmitter. The host sends SYNC, PID and data bytes;
+// the fabric adds NRZI, bit stuffing, CRC16 and the end of packet.
+//
+// At every bit tick the line latches the current bit `x`, the shifter advances
+// unless the bit is a stuffed 0, and the CRC absorbs the data bit, or emits its
+// next check bit once the shifter runs dry.
+
+clock 50 MHz
+const BIT = 33 cycles   // 1.5 Mb/s is 33.3 cycles; 1% fast is inside the USB spec
+
+pin dp: out = d_plus
+pin dm: out = d_minus
+
+event finish              // ends a packet: stops the bit clock, resets CRC and counters
+flag absorbing, ending    // set by the controller: CRC the data field; send SE0
+
+timer bit { every: BIT, pulse, run: bits.busy until finish }
+shifter bits { shift: step }
+
+counter ones { count: bit.tick, streak: ones(x), limit: 6 }   // six 1s: stuff a 0
+counter check_bits { count: emit, limit: 16, clear: finish }
+crc check {
+    width: 16, poly: 0x8005, check: 0x800D,
+    absorb: absorb, data: bits.out,
+    emit: emit, restart: finish,
+}
+
+reg x = !ones.at_least && (if bits.busy { bits.out } else { check.out })
+reg step = bit.tick && !ones.at_least             // a tick that consumes a data bit
+reg absorb = bit.tick && !ones.at_least && bits.busy && absorbing
+reg emit = bit.tick && !ones.at_least && !bits.busy
+// SE0 starts on a tick after the controller asks, never in place of a stuffed bit.
+reg se0 on bit.tick = ending && (!ones.at_least || se0)
+// NRZI line state (1 = K): a 0 toggles it, SE0 parks it at J.
+reg nrzi on bit.tick = !se0 && (if x { nrzi } else { !nrzi })
+reg d_plus = nrzi && !se0
+reg d_minus = !nrzi && !se0
+
+export fn transmit(packet: bytes via bits) {
+    dp.drive()
+    dm.drive()
+    // The CRC covers the data field only: start absorbing after SYNC and PID.
+    wait bits.word
+    wait bits.word
+    set_flags(absorbing)
+    // End of packet: two bit times of SE0, one of J, then release the bus.
+    wait check_bits.at_least
+    set_flags(absorbing, ending)
+    wait se0
+    wait next bit.tick
+    clear_flags()
+    wait next bit.tick
+    wait bit.tick
+    fire finish
+    dp.release()
+    dm.release()
+}
+
+// ─── tests ───────────────────────────────────────────────
+
+const SYNC = 0x80
+const DATA0 = 0xC3
+
+test "sends a data packet" {
+    attach usb_host(dp: dp, dm: dm, bit: BIT) as host_port
+    transmit([SYNC, DATA0, 0x01, 0xFF, 0xFF, 0x80, 0x7E, 0x3F])
+    expect host_port.read(7) == [DATA0, 0x01, 0xFF, 0xFF, 0x80, 0x7E, 0x3F]
+}
+
+test "sends packets back to back" {
+    attach usb_host(dp: dp, dm: dm, bit: BIT) as host_port
+    transmit([SYNC, DATA0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+    transmit([SYNC, DATA0])
+    expect host_port.read(10) == [DATA0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, DATA0]
+}

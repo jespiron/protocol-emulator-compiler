@@ -1,0 +1,90 @@
+// Raw SWD host primitives. Each call pauses SWCLK low between chunks.
+// No automatic WAIT/FAULT retry or AP posted-read policy: the caller owns those.
+clock 50 MHz
+const HALF = 16 cycles
+pin swclk: out = clock.out
+pin swdio: out = bits.out
+event go
+timer clock { every: HALF, idle: 0, run: bits.busy until bits.done }
+shifter bits { idle: 1, start: go, shift: clock.fall, sample: swdio at clock.rise }
+export fn send8(value: u8) {
+    bits.set { frame: [data(8)], idle: 1, sample: swdio at clock.rise }
+    swdio.drive()
+    bits.load(value)
+    fire go
+    wait bits.done
+}
+export fn send1(value: bit) {
+    bits.set { frame: [data(1)], idle: 1, sample: swdio at clock.rise }
+    swdio.drive()
+    bits.load(value)
+    fire go
+    wait bits.done
+}
+export fn receive8() -> bytes {
+    swdio.release()
+    bits.set { frame: [data(8)], idle: 1, sample: swdio at clock.fall }
+    bits.load(0xFF)
+    fire go
+    wait bits.done
+    reply bits.received & 255
+}
+export fn receive6() -> bytes {
+    swdio.release()
+    bits.set { frame: [data(6)], idle: 1, sample: swdio at clock.fall }
+    bits.load(0xFF)
+    fire go
+    wait bits.done
+    reply bits.received & 63
+}
+export fn receive5() -> bytes {
+    swdio.release()
+    bits.set { frame: [data(5)], idle: 1, sample: swdio at clock.fall }
+    bits.load(0xFF)
+    fire go
+    wait bits.done
+    reply bits.received & 31
+}
+test "line reset, switch, DP read, SELECT write and readback" {
+    attach swd_target(swclk: swclk, swdio: swdio) as target
+    send8(0xFF)
+    send8(0xFF)
+    send8(0xFF)
+    send8(0xFF)
+    send8(0xFF)
+    send8(0xFF)
+    send8(0xFF)
+    send8(0x9E)
+    send8(0xE7)
+    send8(0xFF)
+    send8(0xFF)
+    send8(0xFF)
+    send8(0xFF)
+    send8(0xFF)
+    send8(0xFF)
+    send8(0xFF)
+    send8(0)
+    send8(0xA5)
+    expect receive8() == [185]
+    expect receive8() == [163]
+    expect receive8() == [0]
+    expect receive8() == [93]
+    expect receive6() == [49]
+    send8(0)
+    send8(0xB1)
+    expect receive5() == [25]
+    send8(0xF1)
+    send8(0)
+    send8(0)
+    send8(0)
+    send1(1)
+    expect target.read(4) == [0xF1, 0, 0, 0]
+    send8(0)
+    send8(0xBD)
+    expect receive8() == [137]
+    expect receive8() == [119]
+    expect receive8() == [255]
+    expect receive8() == [7]
+    expect receive6() == [62]
+    send8(0)
+}

@@ -113,3 +113,4 @@ class SwdTarget:
                     self.select = data & 0xFF
             self.history = [0]
             self.ones = 0
+

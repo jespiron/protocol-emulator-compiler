@@ -18,6 +18,7 @@
 //! needs a fifth timer, a ninth pin, or a duration that is not a whole number
 //! of clock cycles is rejected with an [`Error`] pointing at the source.
 
+mod byte_pipeline;
 mod control;
 mod diagnostic;
 mod elaborate;

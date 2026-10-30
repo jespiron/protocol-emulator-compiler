@@ -1,6 +1,6 @@
 //! Recursive-descent parser. Newlines are insignificant; every construct is
 //! self-delimiting, and commas between fields and statements are optional.
-use super::ast::{Arg, Expr, ExprKind, Field, Item, Name, Param, Stmt, StmtKind, Type};
+use super::ast::{Arg, ByteStage, Expr, ExprKind, Field, Item, Name, Param, Stmt, StmtKind, Type};
 use super::lexer::{Kind, Token};
 use crate::diagnostic::{Error, Result, Span};
 
@@ -289,11 +289,22 @@ impl Parser {
                 self.expect(":")?;
                 let from = self.expr()?;
                 self.expect("->")?;
+                let to = self.expr()?;
+                let mut stages = Vec::new();
+                if self.eat("{") {
+                    while !self.eat("}") {
+                        stages.push(ByteStage {
+                            kind: self.name()?,
+                            fields: self.fields()?,
+                        });
+                    }
+                }
                 Item::Stream {
                     packets,
                     name,
                     from,
-                    to: self.expr()?,
+                    to,
+                    stages,
                 }
             }
             "export" if self.eat("fn") => self.function(true)?,

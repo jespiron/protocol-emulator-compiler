@@ -123,3 +123,64 @@ all unlisted flags become 0. It requires at least one flag. `clear_flags()`
 takes no arguments and sets every flag to 0. The old `flags(...)` spelling
 is rejected with migration guidance. Updating just one flag while preserving
 the others is not exposed by this compiler yet.
+
+## Packets and burst transfers
+
+Use `export packets` when boundaries and receive errors matter:
+
+```spatial
+export packets send: host -> bits
+export packets recv: bits -> host
+```
+
+Host-side tests and the interactive console use:
+
+```spatial
+send.write_packet([0xA5, 0x3C])
+expect recv.read_packet() == packet([0xA5, 0x3C], error: 0)
+```
+
+A packet read consumes through the first EOP-tagged byte, returns its data and
+an `error` bit (OR of the received byte-error tags), and leaves the next packet
+queued. `error: 1` is visible data rather than an automatic test failure. Byte
+streams retain their existing automatic parity/stop-error checks. Packet and
+byte methods cannot be mixed on a stream. Empty packets are rejected because
+there is no byte on which to carry EOP. TX packet writes currently carry EOP,
+not host-injected ERR; receive errors come from the hardware.
+
+Shifter settings expose existing RTL register `0x32 + shifter_index`:
+
+- `burst`: subsequent words share one frame's pre/parity/post bits.
+- `end: level`: a high level marks the current word as the last. This is
+  required in burst mode because the hardware always observes this selector.
+  For EOP-tag-only termination, supply a zero-valued `reg`.
+- `end_on_packet`: a TX FIFO byte tagged EOP also ends the burst. Requires a
+  host-to-shifter FIFO connection and is required for TX packet streams.
+- `abort: signal`: while asserted, drops the in-flight word without a receive
+  push or word-completion event. It returns to the configured idle level; it
+  does not disable the pin driver. It can also be used without burst mode.
+
+FIFO starvation also ends a transmit burst in the existing RTL; the new API
+cannot make an insufficiently fed frame continuous. The host must keep up.
+RX packet exports require burst mode and an end condition. EOP tags are local
+FIFO metadata, not a packet delimiter magically added to the external wire:
+protocol programs must implement their actual on-wire framing.
+
+Abort does not flush queued TX bytes, already received bytes, or their partial
+packet prefix. It does not synthesize a final EOP/ERR byte. The abort example
+therefore cancels the first word before any receive byte is emitted, with no
+further TX data queued, then starts a fresh packet. Recovering a partial packet
+that already emitted bytes needs a protocol-specific resynchronization/flush
+policy, outside this slice.
+
+Run the examples:
+
+```sh
+cargo run -q -- run --test examples/packets.spt
+cargo run -q -- run --test examples/packet_errors.spt
+```
+
+`packets.spt` uses one full-duplex shifter and an external pin loopback to
+exercise two packet boundaries and abort/restart. `packet_errors.spt` receives
+UART frames from an independent peer, proving both clean and corrupt parity
+are reported with the correct packet metadata. No RTL changes are needed.

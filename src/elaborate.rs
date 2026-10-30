@@ -81,6 +81,7 @@ pub(crate) enum Direction {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Stream {
+    pub packets: bool,
     pub channel: usize,
     pub direction: Direction,
 }
@@ -228,8 +229,16 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
 
     let mut streams = BTreeMap::new();
     for item in items {
-        if let Item::Stream { name, from, to } = item {
-            streams.insert(name.text.clone(), chip.stream(name, from, to)?);
+        if let Item::Stream {
+            name,
+            from,
+            to,
+            packets,
+        } = item
+        {
+            let mut stream = chip.stream(name, from, to)?;
+            stream.packets = *packets;
+            streams.insert(name.text.clone(), stream);
         }
     }
     let functions: Vec<&Item> = items
@@ -237,6 +246,57 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
         .filter(|i| matches!(i, Item::Fn { .. }))
         .collect();
     control::claim_fifos(&mut chip, &functions)?;
+    for item in items {
+        if let Item::Stream {
+            name,
+            from,
+            to,
+            packets: true,
+        } = item
+        {
+            let stream = &streams[&name.text];
+            let shifter = if stream.direction == Direction::ToChip {
+                to
+            } else {
+                from
+            };
+            let (tile, _) = chip.decl(shifter)?;
+            let fields = chip.tiles[&tile];
+            let enabled = |key: &str| -> Result<bool> {
+                match fields.iter().find(|f| f.name.text == key) {
+                    None => Ok(false),
+                    Some(field) => Ok(field
+                        .value
+                        .as_ref()
+                        .map(|expr| chip.bit(expr))
+                        .transpose()?
+                        .unwrap_or(1)
+                        != 0),
+                }
+            };
+            if !enabled("burst")? {
+                return Err(Error::new(
+                    name.span,
+                    "a packet stream needs a shifter with `burst`",
+                ));
+            }
+            if stream.direction == Direction::ToChip && !enabled("end_on_packet")? {
+                return Err(Error::new(
+                    name.span,
+                    "a transmit packet stream needs `end_on_packet`",
+                ));
+            }
+            if stream.direction == Direction::FromChip
+                && !enabled("end_on_packet")?
+                && !fields.iter().any(|f| f.name.text == "end")
+            {
+                return Err(Error::new(
+                    name.span,
+                    "a receive packet stream needs `end` or `end_on_packet`",
+                ));
+            }
+        }
+    }
 
     let mut asm = Assembler::default();
     let selectors: Vec<_> = items
@@ -917,6 +977,10 @@ impl Chip<'_> {
                 "sample",
                 "lead",
                 "end_on_sample",
+                "burst",
+                "end_on_packet",
+                "end",
+                "abort",
             ],
             "shifter",
         )?;
@@ -976,7 +1040,7 @@ impl Chip<'_> {
             .transpose()?
             .unwrap_or(Line::ZERO);
         let input = input.map_or(0, Line::level_select);
-        Ok(vec![
+        let mut writes = vec![
             (config::shifter(k, 1), frame),
             (
                 config::shifter(k, 2),
@@ -986,7 +1050,64 @@ impl Chip<'_> {
                 config::shifter(k, 3),
                 u16::from(start.0) | input << 6 | u16::from(pull) << 11 | u16::from(push) << 12,
             ),
-        ])
+        ];
+        if ["burst", "end_on_packet", "end", "abort"]
+            .iter()
+            .any(|key| f.contains_key(key))
+        {
+            let enabled = |key: &str| -> Result<u16> {
+                match f.get(key) {
+                    None => Ok(0),
+                    Some(field) => match &field.value {
+                        None => Ok(1),
+                        Some(expr) => self.bit(expr),
+                    },
+                }
+            };
+            let burst = enabled("burst")?;
+            let packet = enabled("end_on_packet")?;
+            if burst != 0 && !f.contains_key("end") {
+                return Err(Error::new(
+                    name.span,
+                    "a burst needs an explicit `end` level; use a zero-valued reg for packet-tag-only endings",
+                ));
+            }
+            if (packet != 0 || f.contains_key("end")) && burst == 0 {
+                return Err(Error::new(
+                    name.span,
+                    "`end` and `end_on_packet` need `burst`",
+                ));
+            }
+            if packet != 0 && !pull {
+                return Err(Error::new(
+                    name.span,
+                    "`end_on_packet` needs a host-to-shifter FIFO connection",
+                ));
+            }
+            let end = f
+                .get("end")
+                .map(|field| self.level(value(field)?))
+                .transpose()?;
+            if end.is_some_and(|line| !line.is_level()) {
+                return Err(Error::new(
+                    name.span,
+                    "`end` needs a level line; use a pin, flag or reg",
+                ));
+            }
+            let abort = f
+                .get("abort")
+                .map(|field| self.signal(value(field)?))
+                .transpose()?
+                .unwrap_or(Line::ZERO);
+            writes.push((
+                config::shifter_burst(k),
+                end.map_or(0, Line::level_select)
+                    | burst << 5
+                    | packet << 6
+                    | u16::from(abort.0) << 7,
+            ));
+        }
+        Ok(writes)
     }
 
     fn counter(&self, name: &Name, k: usize, list: &[&Field]) -> Result<Vec<(u8, u16)>> {
@@ -1204,6 +1325,10 @@ impl Chip<'_> {
         };
         let channel = self.shifter_index(shifter)?;
         self.claim(channel, direction, name.span)?;
-        Ok(Stream { channel, direction })
+        Ok(Stream {
+            channel,
+            direction,
+            packets: false,
+        })
     }
 }

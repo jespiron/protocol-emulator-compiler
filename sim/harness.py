@@ -27,6 +27,8 @@ class Failure(Exception):
 
 
 def fmt(data):
+    if isinstance(data, dict):
+        return f"packet({fmt(data['data'])}, error: {int(data['error'])})"
     return "[" + ", ".join(f"0x{b:02X}" for b in data) + "]"
 
 
@@ -231,6 +233,8 @@ class Session:
         self.bus = Bus(dut, [])
         self.host = Host(dut, channels)
         self.invariants = Invariants(dut, self.bus, plan["invariants"])
+        self.packet_channels = {s["channel"] for s in plan["streams"].values()
+                                if s.get("packets") and s["direction"] == "from_chip"}
         self.peers = {}
         self.tasks = []
 
@@ -260,7 +264,7 @@ class Session:
             if peer.problems:
                 raise Failure(f"`{name}`: {peer.problems[0]}")
         for channel, buffer in self.host.received.items():
-            if channel != self.calls["channel"] and any(err for _, _, err in buffer):
+            if channel != self.calls["channel"] and channel not in self.packet_channels and any(err for _, _, err in buffer):
                 raise Failure(f"channel {channel} received a byte marked as an error (wrong stop or parity bit)")
         if self.invariants.problems:
             invariant, cycle = self.invariants.problems[0]
@@ -272,7 +276,18 @@ class Session:
         target = step.get("target", {})
         peer = self.peers.get(target.get("peer"))
         output = None
-        if step["op"] == "write" and peer:
+        if step["op"] == "write_packet":
+            await host.write(plan["streams"][target["stream"]]["channel"], step["bytes"], eop_last=True)
+        elif step["op"] == "read_packet":
+            name = target["stream"]
+            buffer = host.received[plan["streams"][name]["channel"]]
+            await wait_for(dut, lambda: any(eop for _, eop, _ in buffer),
+                           lambda: f"`{name}` has {len(buffer)} bytes but no packet end", self.check)
+            end = next(i + 1 for i, (_, eop, _) in enumerate(buffer) if eop)
+            entries = buffer[:end]
+            del buffer[:end]
+            output = {"data": [b for b, _, _ in entries], "error": any(err for _, _, err in entries)}
+        elif step["op"] == "write" and peer:
             peer.write(step["bytes"])
         elif step["op"] == "write":
             await host.write(plan["streams"][target["stream"]]["channel"], step["bytes"])

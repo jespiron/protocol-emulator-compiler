@@ -1,0 +1,41 @@
+// A synchronous full-duplex shifter observes its own data through external pins.
+// FIFO EOP tags end bursts; an abort drops the in-flight word, not the FIFO.
+clock 50 MHz
+pin tx: out = bits.out
+pin rx: in
+flag cancel = 0
+reg last_word = 0
+reg stop_clock = bits.done || cancel
+timer bit { every: 256 cycles, idle: 0, run: bits.busy until stop_clock }
+shifter bits {
+    frame: [data(8)],
+    shift: bit.fall,
+    sample: rx at bit.rise,
+    burst,
+    end: last_word,
+    end_on_packet,
+    abort: cancel,
+}
+export packets send: host -> bits
+export packets recv: bits -> host
+export fn cancel_transfer() { set_flags(cancel) }
+export fn resume() { clear_flags() }
+
+test "two packets keep their boundaries" {
+    wire tx -> rx
+    send.write_packet([0xA5, 0x3C])
+    send.write_packet([0x00, 0xFF, 0x81])
+    expect recv.read_packet() == packet([0xA5, 0x3C], error: 0)
+    expect recv.read_packet() == packet([0x00, 0xFF, 0x81], error: 0)
+}
+
+test "abort a partial first word then receive a fresh packet" {
+    wire tx -> rx
+    send.write_packet([0xA5])
+    wait 2 us
+    cancel_transfer()
+    wait 10 us
+    resume()
+    send.write_packet([0x5A])
+    expect recv.read_packet() == packet([0x5A], error: 0)
+}

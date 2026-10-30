@@ -9,7 +9,7 @@ pub(crate) struct Name {
 
 #[derive(Clone, Debug)]
 pub(crate) enum Item {
-    /// Internal selector lowered from `contexts(select: phase) { ... }`.
+    /// Internal selector lowered from `contexts(phase) { ... }`.
     Contexts(Expr),
     /// `context 1 { pin tx: out = other.out }`: override existing resources.
     Context { index: Expr, body: Vec<Item> },

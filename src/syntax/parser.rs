@@ -114,9 +114,8 @@ impl Parser {
                 items.extend(self.context_group()?);
             } else {
                 if self.is("context") {
-                    return Err(self.unexpected(
-                        "`contexts(select: level) { context 0 { ... } context 1 { ... } }`",
-                    ));
+                    return Err(self
+                        .unexpected("`contexts(level) { context 0 { ... } context 1 { ... } }`"));
                 }
                 items.push(self.item()?);
             }
@@ -151,8 +150,6 @@ impl Parser {
     fn context_group(&mut self) -> Result<Vec<Item>> {
         self.expect("contexts")?;
         self.expect("(")?;
-        self.expect("select")?;
-        self.expect(":")?;
         let selector = self.expr()?;
         self.expect(")")?;
         self.expect("{")?;

@@ -51,14 +51,14 @@ Editor highlighting for VS Code, Vim, Neovim, Emacs, Helix and Zed: [`editors/`]
 
 ## Configuration contexts
 
-`contexts(select: level)` groups both configurations in one place. The flag's
+`contexts(level)` groups both configurations in one place. The flag's
 initializer makes the starting selection explicit:
 
 ```spatial
 flag phase = 0
 pin tx: out = sender.out
 timer bit { every: 64 cycles, first: 62 cycles, pulse, run: sender.busy until sender.done }
-contexts(select: phase) {
+contexts(phase) {
     context 0 {
         shifter sender { frame: [0, data(8), 1], idle: 1, shift: bit.tick }
     }

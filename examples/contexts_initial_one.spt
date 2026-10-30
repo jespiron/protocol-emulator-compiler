@@ -1,0 +1,30 @@
+// One physical UART shifter, with 8N1 and 8E1 configurations.
+clock 50 MHz
+const BIT = 64 cycles
+pin tx: out = sender.out
+pin unused_rx: in
+flag use_even = 1
+
+timer bit { every: BIT, first: BIT - 2 cycles, pulse, run: sender.busy until sender.done }
+contexts(use_even) {
+    context 0 {
+        pin left: out = 0
+        pin right: out = 1
+        shifter sender { frame: [0, data(8), 1], idle: 1, shift: bit.tick }
+    }
+    context 1 {
+        pin left: out = 1
+        pin right: out = 0
+        shifter sender { frame: [0, data(8), even, 1], idle: 1, shift: bit.tick }
+    }
+}
+export stream send: host -> sender
+// Select between complete frames. Contexts change configuration, not tile state.
+export fn even_mode() { set_flags(use_even) }
+export fn normal_mode() { clear_flags() }
+
+test "explicit one starts in context one without a mode call" {
+    attach uart_device(from_chip: tx, to_chip: unused_rx, bit: BIT, parity: "even") as terminal
+    send.write([0x00, 0x01, 0xFF])
+    expect terminal.read(3) == [0x00, 0x01, 0xFF]
+}

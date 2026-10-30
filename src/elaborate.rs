@@ -173,7 +173,7 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
 
     for item in items {
         match item {
-            Item::Clock(_) => {}
+            Item::Clock(_) | Item::Contexts(_) | Item::Context { .. } => {}
             Item::Const { name, value } => {
                 declare(name, None, &mut chip)?;
                 chip.env.defs.insert(name.text.clone(), value.span);
@@ -209,14 +209,14 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
                 chip.tiles.insert(name.text.clone(), fields);
             }
             Item::Reg { name, .. } => declare(name, Some(Kind::Reg), &mut chip)?,
-            Item::Event(list) | Item::Flag(list) => {
-                let kind = if matches!(item, Item::Event(_)) {
-                    Kind::Event
-                } else {
-                    Kind::Flag
-                };
+            Item::Event(list) => {
                 for name in list {
-                    declare(name, Some(kind), &mut chip)?;
+                    declare(name, Some(Kind::Event), &mut chip)?;
+                }
+            }
+            Item::Flag(list) => {
+                for (name, _) in list {
+                    declare(name, Some(Kind::Flag), &mut chip)?;
                 }
             }
             Item::Stream { name, .. } | Item::Fn { name, .. } => declare(name, None, &mut chip)?,
@@ -239,6 +239,39 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
     control::claim_fifos(&mut chip, &functions)?;
 
     let mut asm = Assembler::default();
+    let selectors: Vec<_> = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Contexts(expr) => Some(expr),
+            _ => None,
+        })
+        .collect();
+    if selectors.len() > 1 {
+        return Err(Error::new(
+            selectors[1].span,
+            "declare only one `contexts` selector",
+        ));
+    }
+    let context_blocks: Vec<_> = items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Context { index, body } => Some((index, body)),
+            _ => None,
+        })
+        .collect();
+    if let Some((index, _)) = context_blocks.first()
+        && selectors.is_empty()
+    {
+        return Err(Error::new(
+            index.span,
+            "a context override needs a `contexts(level)` block",
+        ));
+    }
+    if !selectors.is_empty() {
+        // Defaults initialize both banks before any overrides. Existing programs
+        // without contexts retain their original byte images and write mask.
+        asm.config(config::CONTEXT_WRITE, 3);
+    }
     for item in items {
         let writes = match item {
             Item::Pin {
@@ -259,6 +292,109 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
         for (address, value) in writes {
             asm.config(address, value);
         }
+    }
+    let mut seen = [false; 2];
+    for (index, body) in context_blocks {
+        let bank = Chip::ranged(index, chip.env.integer(index)?, 0, 1, "the context")? as usize;
+        if seen[bank] {
+            return Err(Error::new(
+                index.span,
+                format!("context {bank} is already defined"),
+            ));
+        }
+        seen[bank] = true;
+        asm.config(config::CONTEXT_WRITE, 1 << bank);
+        let mut overridden = std::collections::HashSet::new();
+        for item in body {
+            let (name, writes) = match item {
+                Item::Pin {
+                    name,
+                    pads,
+                    mode,
+                    source,
+                } => {
+                    let decl = chip.decls.get(&name.text).ok_or_else(|| {
+                        Error::new(
+                            name.span,
+                            "declare the shared pin before overriding it in a context",
+                        )
+                    })?;
+                    if decl.kind != Kind::Pin || pads.is_some() {
+                        return Err(Error::new(
+                            name.span,
+                            "a context can change pin settings, not its kind or pad assignment",
+                        ));
+                    }
+                    (name, chip.pin(name, mode, source.as_ref())?)
+                }
+                Item::Tile { kind, name, fields } => {
+                    let decl = chip.decls.get(&name.text).ok_or_else(|| {
+                        Error::new(
+                            name.span,
+                            "declare the shared tile before overriding it in a context",
+                        )
+                    })?;
+                    if decl.kind.noun() != kind.text || decl.kind == Kind::Crc {
+                        return Err(Error::new(
+                            name.span,
+                            "only existing timers, shifters and counters have context overrides",
+                        ));
+                    }
+                    let mut merged: Vec<&Field> = chip.tiles[&name.text].iter().collect();
+                    let mut field_names = std::collections::HashSet::new();
+                    for field in fields {
+                        if !field_names.insert(&field.name.text) {
+                            return Err(Error::new(field.name.span, "duplicate context field"));
+                        }
+                        merged.retain(|base| base.name.text != field.name.text);
+                        merged.push(field);
+                    }
+                    (name, chip.tile(name, &merged)?)
+                }
+                _ => {
+                    return Err(Error::new(
+                        index.span,
+                        "a context body only overrides existing pins, timers, shifters or counters",
+                    ));
+                }
+            };
+            if !overridden.insert(&name.text) {
+                return Err(Error::new(
+                    name.span,
+                    "resource is overridden twice in this context",
+                ));
+            }
+            for (address, value) in writes {
+                asm.config(address, value);
+            }
+        }
+    }
+    if let Some(selector) = selectors.first() {
+        let line = chip.signal(selector)?;
+        if !line.is_level() {
+            return Err(Error::new(
+                selector.span,
+                "a context selector must be a level: a pin, flag or reg, not a pulse",
+            ));
+        }
+        // Runtime .set/.drive/.release operations update both banks.
+        asm.config(config::CONTEXT_WRITE, 3);
+        asm.config(config::CONTEXT_SELECT, u16::from(line.0) | 0x40);
+    }
+    let mut flag_bits = 0u16;
+    let mut initialized = false;
+    for item in items {
+        if let Item::Flag(flags) = item {
+            for (name, init) in flags {
+                if let Some(expr) = init {
+                    flag_bits |= chip.bit(expr)? << chip.decls[&name.text].index;
+                    initialized = true;
+                }
+            }
+        }
+    }
+    if initialized {
+        asm.config(config::FLAGS, flag_bits);
     }
     asm.config(config::ARM, 1);
     let exports = control::lower(&chip, &functions, &mut asm)?;

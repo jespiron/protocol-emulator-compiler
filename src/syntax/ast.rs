@@ -7,8 +7,12 @@ pub(crate) struct Name {
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum Item {
+    /// Internal selector lowered from `contexts(phase) { ... }`.
+    Contexts(Expr),
+    /// `context 1 { pin tx: out = other.out }`: override existing resources.
+    Context { index: Expr, body: Vec<Item> },
     /// `clock 50 MHz`
     Clock(Expr),
     /// `const BIT = 64 cycles`
@@ -36,8 +40,8 @@ pub(crate) enum Item {
     },
     /// `event begin, finish`
     Event(Vec<Name>),
-    /// `flag sending, ending`: levels the controller sets.
-    Flag(Vec<Name>),
+    /// `flag sending = 0, ending = 1`: controller levels, zero by default.
+    Flag(Vec<(Name, Option<Expr>)>),
     /// `export stream send: host -> sender`
     Stream { name: Name, from: Expr, to: Expr },
     /// `export fn transfer(...) -> bytes { ... }` or a private `fn`.
@@ -55,33 +59,33 @@ pub(crate) enum Item {
 }
 
 /// `name: value`, or a bare flag such as `pulse`.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Field {
     pub name: Name,
     pub value: Option<Expr>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Param {
     pub name: Name,
     pub ty: Type,
 }
 
 /// `u8`, `bytes via bits`, `u8 in 1..=16`
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Type {
     pub name: Name,
     pub via: Option<Name>,
     pub range: Option<(Expr, Expr)>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Stmt {
     pub kind: StmtKind,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum StmtKind {
     Fire(Name),
     /// `wait x`, or `wait next x` to ignore events that happened earlier.

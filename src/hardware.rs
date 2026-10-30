@@ -121,6 +121,10 @@ pub(crate) mod config {
     }
     /// Controller flags, one bit each.
     pub(crate) const FLAGS: u8 = 0x30;
+    /// Global context-select line (low six bits) and enable (bit six).
+    pub(crate) const CONTEXT_SELECT: u8 = 0x34;
+    /// Configuration-write mask: bit zero for context 0, bit one for context 1.
+    pub(crate) const CONTEXT_WRITE: u8 = 0x35;
     /// Writing 1 goes live; tiles and pins stay idle until then.
     pub(crate) const ARM: u8 = 0x31;
 }

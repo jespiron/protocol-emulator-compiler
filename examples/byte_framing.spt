@@ -1,0 +1,50 @@
+// Byte framing: add checksum, escape; unescape, verify. Not bit-synchronous HDLC.
+clock 50 MHz
+const BIT = 64 cycles
+pin tx: out = sender.out
+pin rx: in
+timer tx_bit { every: BIT, first: BIT - 2 cycles, pulse, run: sender.busy until sender.done }
+shifter sender { frame: [0, data(8), 1], idle: 1, shift: tx_bit.tick }
+timer rx_bit { every: BIT, first: BIT / 2 - 1 cycles, pulse, run: rx.fall until receiver.done }
+shifter receiver { frame: [0, data(8), 1], start: rx.fall, shift: rx_bit.tick, sample: rx at rx_bit.tick }
+
+export packets send: host -> sender {
+    checksum { algorithm: add, operation: generate }
+    escape { delimiter: 0x7E, escape: 0x7D, mapped_delimiter: 0x5E, mapped_escape: 0x5D, prepend, append }
+}
+export packets recv: receiver -> host {
+    unescape { delimiter: 0x7E, escape: 0x7D, mapped_delimiter: 0x5E, mapped_escape: 0x5D }
+    checksum { algorithm: add, operation: verify }
+}
+
+test "packet data and escapes round trip with checksum" {
+    wire tx -> rx
+    send.write_packet([0x7E, 0x7D, 0x01])
+    expect recv.read_packet() == packet([0x7E, 0x7D, 0x01, 0x04], error: 0)
+    send.write_packet([0x02, 0x03])
+    expect recv.read_packet() == packet([0x02, 0x03, 0xFB], error: 0)
+    send.write_packet([0x82])
+    expect recv.read_packet() == packet([0x82, 0x7E], error: 0)
+}
+
+test "independent UART peer sees exact framed and escaped bytes" {
+    attach uart_device(from_chip: tx, to_chip: rx, bit: BIT) as terminal
+    send.write_packet([0x7E, 0x7D, 0x01])
+    expect terminal.read(8) == [0x7E, 0x7D, 0x5E, 0x7D, 0x5D, 0x01, 0x04, 0x7E]
+    send.write_packet([0x82])
+    expect terminal.read(5) == [0x7E, 0x82, 0x7D, 0x5E, 0x7E]
+}
+
+test "bad checksum is reported" {
+    attach uart_device(from_chip: tx, to_chip: rx, bit: BIT) as terminal
+    wait 100 us
+    terminal.write([0x7E, 0x10, 0x00, 0x7E])
+    expect recv.read_packet() == packet([0x10, 0x00], error: 1)
+}
+
+test "malformed escape is reported even with a valid checksum" {
+    attach uart_device(from_chip: tx, to_chip: rx, bit: BIT) as terminal
+    wait 100 us
+    terminal.write([0x7E, 0x7D, 0x11, 0xEF, 0x7E])
+    expect recv.read_packet() == packet([0x11, 0xEF], error: 1)
+}

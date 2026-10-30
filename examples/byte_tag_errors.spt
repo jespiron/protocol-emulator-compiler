@@ -1,0 +1,18 @@
+// TAG remembers an error line while collecting each fixed-length packet.
+clock 50 MHz
+const BIT = 64 cycles
+pin tx: out = 1
+pin rx: in
+timer rx_bit { every: BIT, first: BIT / 2 - 1 cycles, pulse, run: rx.fall until receiver.done }
+shifter receiver { frame: [0, data(8), 1], start: rx.fall, shift: rx_bit.tick, sample: rx at rx_bit.tick }
+
+export packets recv: receiver -> host {
+    tag { length: 2, error: 1 }
+}
+
+test "tag error line marks a collected packet" {
+    attach uart_device(from_chip: tx, to_chip: rx, bit: BIT) as terminal
+    wait 100 us
+    terminal.write([0x55, 0xAA])
+    expect recv.read_packet() == packet([0x55, 0xAA], error: 1)
+}

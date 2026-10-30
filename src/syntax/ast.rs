@@ -48,6 +48,7 @@ pub(crate) enum Item {
         from: Expr,
         to: Expr,
         packets: bool,
+        stages: Vec<ByteStage>,
     },
     /// `export fn transfer(...) -> bytes { ... }` or a private `fn`.
     Fn {
@@ -164,4 +165,11 @@ pub(crate) enum ExprKind {
 pub(crate) struct Arg {
     pub name: Option<Name>,
     pub value: Expr,
+}
+
+/// An ordered hardware byte stage on an exported connection.
+#[derive(Clone, Debug)]
+pub(crate) struct ByteStage {
+    pub kind: Name,
+    pub fields: Vec<Field>,
 }

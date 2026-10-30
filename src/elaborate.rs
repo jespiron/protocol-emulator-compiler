@@ -234,6 +234,7 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
             from,
             to,
             packets,
+            ..
         } = item
         {
             let mut stream = chip.stream(name, from, to)?;
@@ -246,15 +247,76 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
         .filter(|i| matches!(i, Item::Fn { .. }))
         .collect();
     control::claim_fifos(&mut chip, &functions)?;
+    let mut byte_writes = Vec::new();
+    let mut byte_usage = 0;
+    let mut framed_streams = std::collections::HashSet::new();
+    let mut processed_streams = std::collections::HashSet::new();
+    for item in items {
+        if let Item::Stream {
+            name,
+            stages,
+            from,
+            to,
+            ..
+        } = item
+        {
+            let stream = &streams[&name.text];
+            let shifter = if stream.direction == Direction::ToChip {
+                to
+            } else {
+                from
+            };
+            let (tile, _) = chip.decl(shifter)?;
+            let burst = chip.tiles[&tile]
+                .iter()
+                .find(|field| field.name.text == "burst")
+                .map(|field| {
+                    field
+                        .value
+                        .as_ref()
+                        .map(|expr| chip.bit(expr))
+                        .transpose()
+                        .map(|value| value.unwrap_or(1) != 0)
+                })
+                .transpose()?
+                .unwrap_or(false);
+            let boundaries = if stream.direction == Direction::ToChip {
+                stream.packets
+            } else {
+                burst
+            };
+            let pipeline = crate::byte_pipeline::encode(
+                &chip,
+                stages,
+                stream.channel,
+                stream.direction,
+                boundaries,
+            )?;
+            byte_usage += stages.len();
+            byte_writes.extend(pipeline.writes);
+            if pipeline.frames {
+                framed_streams.insert(&name.text);
+            }
+            if pipeline.consumes_eop {
+                processed_streams.insert(&name.text);
+            }
+        }
+    }
     for item in items {
         if let Item::Stream {
             name,
             from,
             to,
             packets: true,
+            ..
         } = item
         {
             let stream = &streams[&name.text];
+            if (stream.direction == Direction::ToChip && processed_streams.contains(&name.text))
+                || (stream.direction == Direction::FromChip && framed_streams.contains(&name.text))
+            {
+                continue;
+            }
             let shifter = if stream.direction == Direction::ToChip {
                 to
             } else {
@@ -441,6 +503,9 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
         asm.config(config::CONTEXT_WRITE, 3);
         asm.config(config::CONTEXT_SELECT, u16::from(line.0) | 0x40);
     }
+    for (address, value) in byte_writes {
+        asm.config(address, value);
+    }
     let mut flag_bits = 0u16;
     let mut initialized = false;
     for item in items {
@@ -487,6 +552,9 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
             )
         })
         .collect();
+    if byte_usage != 0 {
+        usage.push(("byte tiles", byte_usage, hardware::BYTE_TILES));
+    }
     usage.push(("memory", image.len(), hardware::SRAM_BYTES));
     Ok(Design {
         clock_hz,
@@ -568,7 +636,7 @@ fn assign_pads(pins: &[(&Name, Vec<usize>)]) -> Result<Vec<usize>> {
 
 /// Index fields by name, rejecting unknown and repeated ones. Later fields
 /// override earlier ones, which is how `.set { ... }` overrides a declaration.
-fn fields<'f>(
+pub(crate) fn fields<'f>(
     list: &[&'f Field],
     allowed: &[&str],
     noun: &str,

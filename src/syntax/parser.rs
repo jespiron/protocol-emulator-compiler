@@ -118,6 +118,16 @@ impl Parser {
     fn item(&mut self) -> Result<Item> {
         let keyword = self.name()?;
         Ok(match keyword.text.as_str() {
+            "contexts" => Item::Contexts(self.expr()?),
+            "context" => {
+                let index = self.expr()?;
+                self.expect("{")?;
+                let mut body = Vec::new();
+                while !self.eat("}") {
+                    body.push(self.item()?);
+                }
+                Item::Context { index, body }
+            }
             "clock" => Item::Clock(self.expr()?),
             "const" => {
                 let name = self.name()?;
@@ -217,7 +227,7 @@ impl Parser {
                     keyword.span,
                     format!(
                         "expected a declaration (clock, const, pin, timer, shifter, counter, crc, \
-                         reg, event, flag, fn, export, test or always), found `{}`",
+                         reg, event, flag, contexts, context, fn, export, test or always), found `{}`",
                         keyword.text
                     ),
                 ));

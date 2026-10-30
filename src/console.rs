@@ -39,7 +39,13 @@ fn offers(plan: &Json) -> Vec<String> {
     }
     if let Some(streams) = plan["streams"].as_object() {
         for (name, stream) in streams {
-            let method = if stream["direction"] == "to_chip" {
+            let method = if stream["packets"].as_bool().unwrap_or(false) {
+                if stream["direction"] == "to_chip" {
+                    "write_packet(bytes)"
+                } else {
+                    "read_packet()"
+                }
+            } else if stream["direction"] == "to_chip" {
                 "write(bytes)"
             } else {
                 "read(n)"
@@ -51,6 +57,13 @@ fn offers(plan: &Json) -> Vec<String> {
 }
 
 fn bytes(output: &Json) -> String {
+    if output.is_object() {
+        return format!(
+            "packet({}, error: {})",
+            bytes(&output["data"]),
+            u8::from(output["error"].as_bool().unwrap_or(false))
+        );
+    }
     let values: Vec<u8> = output
         .as_array()
         .into_iter()

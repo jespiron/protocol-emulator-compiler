@@ -280,12 +280,17 @@ impl Parser {
                 }
                 Item::Flag(flags)
             }
-            "export" if self.eat("stream") => {
+            "export" if self.is("stream") || self.is("packets") => {
+                let packets = self.eat("packets");
+                if !packets {
+                    self.expect("stream")?;
+                }
                 let name = self.name()?;
                 self.expect(":")?;
                 let from = self.expr()?;
                 self.expect("->")?;
                 Item::Stream {
+                    packets,
                     name,
                     from,
                     to: self.expr()?,

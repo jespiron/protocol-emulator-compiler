@@ -1,0 +1,30 @@
+// Each UART byte is a one-word burst packet. Packet reads retain error tags.
+clock 50 MHz
+const BIT = 64 cycles
+pin tx_unused: out = 1
+pin rx: in
+reg last_word = 1
+timer sample { every: BIT, first: BIT / 2 - 1 cycles, pulse, run: rx.fall until receiver.done }
+shifter receiver {
+    frame: [0, data(8), even, 1],
+    start: rx.fall,
+    shift: sample.tick,
+    sample: rx at sample.tick,
+    burst,
+    end: last_word,
+}
+export packets recv: receiver -> host
+
+test "good parity is a clean packet" {
+    attach uart_device(from_chip: tx_unused, to_chip: rx, bit: BIT, parity: "even") as terminal
+    wait 20 us  // allow the controller to finish configuration and arm
+    terminal.write([0x01, 0xA5])
+    expect recv.read_packet() == packet([0x01], error: 0)
+    expect recv.read_packet() == packet([0xA5], error: 0)
+}
+test "bad parity remains visible as packet metadata" {
+    attach uart_device(from_chip: tx_unused, to_chip: rx, bit: BIT, parity: "odd") as terminal
+    wait 20 us  // allow the controller to finish configuration and arm
+    terminal.write([0x01])
+    expect recv.read_packet() == packet([0x01], error: 1)
+}

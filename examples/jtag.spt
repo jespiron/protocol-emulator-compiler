@@ -1,0 +1,84 @@
+// JTAG controller: TMS/TDI launch while TCK is low; TDO sampled on rising edges.
+clock 50 MHz
+const HALF = 16 cycles
+pin tck: out = clock.out
+pin tms: out = mode.out
+pin tdi: out = data.out
+pin tdo: in
+event go
+timer clock { every: HALF, idle: 0, run: data.busy until data.done }
+shifter data { start: go, shift: clock.fall, sample: tdo at clock.rise }
+shifter mode { start: go, shift: clock.fall }
+export fn step(tms: bit, tdi: bit) -> bytes {
+    data.set { frame: [data(1)] }
+    mode.set { frame: [data(1)] }
+    mode.load(tms)
+    data.load(tdi)
+    fire go
+    wait data.done
+    wait mode.done
+    reply data.received & 1
+}
+export fn scan8(tms: u8, tdi: u8) -> bytes {
+    data.set { frame: [data(8)] }
+    mode.set { frame: [data(8)] }
+    mode.load(tms)
+    data.load(tdi)
+    fire go
+    wait data.done
+    wait mode.done
+    reply data.received
+}
+
+test "reset and read a 32-bit IDCODE" {
+    attach jtag_tap(tck: tck, tms: tms, tdi: tdi, tdo: tdo) as tap
+    step(1, 0)
+    step(1, 0)
+    step(1, 0)
+    step(1, 0)
+    step(1, 0)
+    step(0, 0)
+    step(1, 0)
+    step(0, 0)
+    step(0, 0)
+    expect scan8(0, 0) == [0x77]
+    expect scan8(0, 0) == [0x04]
+    expect scan8(0, 0) == [0xA0]
+    expect scan8(0x80, 0) == [0x1B]
+    step(1, 0)
+    step(0, 0)
+}
+
+test "select IR and write and read the user DR" {
+    attach jtag_tap(tck: tck, tms: tms, tdi: tdi, tdo: tdo) as tap
+    step(1, 0)
+    step(1, 0)
+    step(1, 0)
+    step(1, 0)
+    step(1, 0)
+    step(0, 0)
+    step(1, 0)
+    step(1, 0)
+    step(0, 0)
+    step(0, 0)
+    expect step(0, 0) == [1]
+    expect step(0, 1) == [0]
+    step(0, 0)
+    step(1, 1)
+    step(1, 0)
+    step(0, 0)
+    step(1, 0)
+    step(0, 0)
+    step(0, 0)
+    expect scan8(0x80, 0x5A) == [0]
+    step(1, 0)
+    step(0, 0)
+    expect tap.read(1) == [0x5A]
+    step(1, 0)
+    step(0, 0)
+    step(0, 0)
+    expect scan8(0x80, 0xC3) == [0x5A]
+    step(1, 0)
+    step(0, 0)
+    expect tap.read(1) == [0xC3]
+}

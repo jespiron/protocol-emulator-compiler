@@ -13,12 +13,14 @@ A peer class takes (bus, dut, name, **args) and provides:
 
 import inspect
 
+from peers.jtag import JtagTap
+
 from peers.i2c import I2cTarget
 from peers.spi import SpiDevice
 from peers.uart import UartDevice
 from peers.usb import UsbHost
 
-KINDS = {"i2c_target": I2cTarget, "spi_device": SpiDevice, "uart_device": UartDevice, "usb_host": UsbHost}
+KINDS = {"jtag_tap": JtagTap, "i2c_target": I2cTarget, "spi_device": SpiDevice, "uart_device": UartDevice, "usb_host": UsbHost}
 
 
 def attach(spec, bus, dut):

@@ -6,7 +6,7 @@ pin unused_rx: in
 flag use_even = 1
 
 timer bit { every: BIT, first: BIT - 2 cycles, pulse, run: sender.busy until sender.done }
-contexts(select: use_even) {
+contexts(use_even) {
     context 0 {
         pin left: out = 0
         pin right: out = 1
@@ -20,8 +20,8 @@ contexts(select: use_even) {
 }
 export stream send: host -> sender
 // Select between complete frames. Contexts change configuration, not tile state.
-export fn even_mode() { flags(use_even) }
-export fn normal_mode() { flags() }
+export fn even_mode() { set_flags(use_even) }
+export fn normal_mode() { clear_flags() }
 
 test "explicit one starts in context one without a mode call" {
     attach uart_device(from_chip: tx, to_chip: unused_rx, bit: BIT, parity: "even") as terminal

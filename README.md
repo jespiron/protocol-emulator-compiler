@@ -51,14 +51,14 @@ Editor highlighting for VS Code, Vim, Neovim, Emacs, Helix and Zed: [`editors/`]
 
 ## Configuration contexts
 
-`contexts(select: level)` groups both configurations in one place. The flag's
+`contexts(level)` groups both configurations in one place. The flag's
 initializer makes the starting selection explicit:
 
 ```spatial
 flag phase = 0
 pin tx: out = sender.out
 timer bit { every: 64 cycles, first: 62 cycles, pulse, run: sender.busy until sender.done }
-contexts(select: phase) {
+contexts(phase) {
     context 0 {
         shifter sender { frame: [0, data(8), 1], idle: 1, shift: bit.tick }
     }
@@ -99,3 +99,27 @@ or `parity: "odd"`; its default remains 8N1. Run:
 cargo test --locked
 cargo run -q -- run --test examples/contexts.spt
 ```
+
+## Setting flags
+
+These are built-in controller operations; they need no `fn` definition:
+
+```spatial
+flag sending = 0, receiving = 0
+
+export fn begin_sending() {
+    set_flags(sending)             // sending=1, receiving=0
+}
+export fn enable_both() {
+    set_flags(sending, receiving)  // sending=1, receiving=1
+}
+export fn stop() {
+    clear_flags()                 // sending=0, receiving=0
+}
+```
+
+`set_flags(...)` replaces the complete flag set: listed flags become 1 and
+all unlisted flags become 0. It requires at least one flag. `clear_flags()`
+takes no arguments and sets every flag to 0. The old `flags(...)` spelling
+is rejected with migration guidance. Updating just one flag while preserving
+the others is not exposed by this compiler yet.

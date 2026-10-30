@@ -264,7 +264,7 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
     {
         return Err(Error::new(
             index.span,
-            "a context override needs a `contexts(select: level)` block",
+            "a context override needs a `contexts(level)` block",
         ));
     }
     if !selectors.is_empty() {

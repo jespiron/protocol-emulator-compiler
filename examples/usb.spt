@@ -42,13 +42,13 @@ export fn transmit(packet: bytes via bits) {
     // The CRC covers the data field only: start absorbing after SYNC and PID.
     wait bits.word
     wait bits.word
-    flags(absorbing)
+    set_flags(absorbing)
     // End of packet: two bit times of SE0, one of J, then release the bus.
     wait check_bits.at_least
-    flags(absorbing, ending)
+    set_flags(absorbing, ending)
     wait se0
     wait next bit.tick
-    flags()
+    clear_flags()
     wait next bit.tick
     wait bit.tick
     fire finish

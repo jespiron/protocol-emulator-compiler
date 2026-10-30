@@ -42,3 +42,27 @@ Editor highlighting for VS Code, Vim, Neovim, Emacs, Helix and Zed: [`editors/`]
 - `sim/`: the simulator harness and built-in peers (simulated devices), embedded into the binary.
 - `examples/`: example programs, which are also the end-to-end tests.
 - `editors/`: syntax highlighting for `.spt` in common editors.
+
+## Setting flags
+
+These are built-in controller operations; they need no `fn` definition:
+
+```spatial
+flag sending = 0, receiving = 0
+
+export fn begin_sending() {
+    set_flags(sending)             // sending=1, receiving=0
+}
+export fn enable_both() {
+    set_flags(sending, receiving)  // sending=1, receiving=1
+}
+export fn stop() {
+    clear_flags()                 // sending=0, receiving=0
+}
+```
+
+`set_flags(...)` replaces the complete flag set: listed flags become 1 and
+all unlisted flags become 0. It requires at least one flag. `clear_flags()`
+takes no arguments and sets every flag to 0. The old `flags(...)` spelling
+is rejected with migration guidance. Updating just one flag while preserving
+the others is not exposed by this compiler yet.

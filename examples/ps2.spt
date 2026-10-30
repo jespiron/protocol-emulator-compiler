@@ -1,0 +1,26 @@
+// PS/2 device-to-host receiver: start, eight LSB-first bits, odd parity, stop.
+// The keyboard supplies the clock. Host commands/request-to-send are not implemented here.
+clock 50 MHz
+pin psclk: in
+pin psdata: in
+shifter receiver {
+    frame: [0, data(8), odd, 1],
+    start: 1,
+    shift: psclk.fall,
+    sample: psdata at psclk.fall,
+}
+export stream scan_codes: receiver -> host
+
+test "keyboard make and break codes" {
+    attach ps2_keyboard(clk: psclk, data: psdata, half: 2000 cycles) as keyboard
+    keyboard.write([0x1C, 0xF0, 0x1C])
+    expect scan_codes.read(3) == [0x1C, 0xF0, 0x1C]
+}
+
+test "all-zero all-one and alternating data at another clock rate" {
+    attach ps2_keyboard(clk: psclk, data: psdata, half: 1500 cycles) as keyboard
+    keyboard.write([0x00, 0xFF, 0x55, 0xAA])
+    expect scan_codes.read(4) == [0x00, 0xFF, 0x55, 0xAA]
+    keyboard.write([0xA5])
+    expect scan_codes.read(1) == [0xA5]
+}

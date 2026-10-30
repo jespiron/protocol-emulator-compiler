@@ -40,6 +40,8 @@ Editor highlighting for VS Code, Vim, Neovim, Emacs, Helix and Zed: [`editors/`]
 
 - [`examples/swd.spt`](examples/swd.spt): raw SWD host transfers, line reset, DP reads/writes, ACK/parity and bus turnaround checks.
 
+- [`examples/ps2.spt`](examples/ps2.spt): PS/2 keyboard reception with odd parity and stop checking; host-to-device commands are outside this example.
+
 ## Layout
 
 - `src/`: the compiler and the `spatial` command.

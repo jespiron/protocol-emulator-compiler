@@ -13,6 +13,8 @@ A peer class takes (bus, dut, name, **args) and provides:
 
 import inspect
 
+from peers.ps2 import Ps2Keyboard
+
 from peers.swd import SwdTarget
 
 from peers.jtag import JtagTap
@@ -22,7 +24,7 @@ from peers.spi import SpiDevice
 from peers.uart import UartDevice
 from peers.usb import UsbHost
 
-KINDS = {"swd_target": SwdTarget, "jtag_tap": JtagTap, "i2c_target": I2cTarget, "spi_device": SpiDevice, "uart_device": UartDevice, "usb_host": UsbHost}
+KINDS = {"ps2_keyboard": Ps2Keyboard, "swd_target": SwdTarget, "jtag_tap": JtagTap, "i2c_target": I2cTarget, "spi_device": SpiDevice, "uart_device": UartDevice, "usb_host": UsbHost}
 
 
 def attach(spec, bus, dut):

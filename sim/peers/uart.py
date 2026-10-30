@@ -10,8 +10,14 @@ from cocotb.triggers import ClockCycles, RisingEdge
 
 
 class UartDevice:
-    def __init__(self, bus, dut, name, from_chip, to_chip, bit):
+    def __init__(self, bus, dut, name, from_chip, to_chip, bit, parity="none"):
         self.bus, self.dut, self.name = bus, dut, name
+        # Spatial string arguments arrive as UTF-8 byte lists in the test plan.
+        if isinstance(parity, list):
+            parity = bytes(parity).decode("utf-8")
+        if parity not in ("none", "even", "odd"):
+            raise ValueError("UART parity must be none, even or odd")
+        self.parity = parity
         self.rx_pad, self.tx_pad, self.bit = from_chip, to_chip, bit
         self.received, self.outbox, self.problems = [], [], []
 
@@ -47,6 +53,10 @@ class UartDevice:
         byte = 0
         for i in range(8):
             byte |= await self._sample_bit(f"data {i}") << i
+        if self.parity != "none":
+            expected = (byte.bit_count() & 1) ^ (self.parity == "odd")
+            if await self._sample_bit("parity") != expected:
+                self.problems.append(f"wrong {self.parity} parity after 0x{byte:02X}")
         if await self._sample_bit("stop") != 1:
             self.problems.append(f"the stop bit after 0x{byte:02X} was 0")
         self.received.append(byte)
@@ -57,7 +67,8 @@ class UartDevice:
                 await ClockCycles(self.dut.clk, 8)
                 continue
             byte = self.outbox.pop(0)
-            for level in [0, *((byte >> i) & 1 for i in range(8)), 1]:
+            parity = [] if self.parity == "none" else [(byte.bit_count() & 1) ^ (self.parity == "odd")]
+            for level in [0, *((byte >> i) & 1 for i in range(8)), *parity, 1]:
                 self.bus.drive[(self.tx_pad, self.name)] = level
                 await ClockCycles(self.dut.clk, self.bit)
             del self.bus.drive[(self.tx_pad, self.name)]

@@ -37,4 +37,7 @@ def attach(spec, bus, dut):
     required = {name for name, p in params.items() if p.default is inspect.Parameter.empty}
     if not required <= set(args) <= set(params):
         return f"`{spec['kind']}` takes {', '.join(params)}" + (f"; it needs {', '.join(sorted(required - set(args)))}" if required - set(args) else "")
-    return kind(bus=bus, dut=dut, name=spec["name"], **args)
+    try:
+        return kind(bus=bus, dut=dut, name=spec["name"], **args)
+    except ValueError as error:
+        return str(error)

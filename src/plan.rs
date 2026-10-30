@@ -48,7 +48,7 @@ pub(crate) fn plan(design: &Design<'_>, source: &str) -> Result<Json> {
             };
             (
                 name.clone(),
-                json!({ "channel": s.channel, "direction": direction }),
+                json!({ "channel": s.channel, "direction": direction, "packets": s.packets }),
             )
         })
         .collect();
@@ -181,7 +181,7 @@ impl Planner<'_, '_> {
             return Ok(None);
         }
         if let Some(stream) = self.design.streams.get(target) {
-            let needed = if method == "write" {
+            let needed = if matches!(method, "write" | "write_packet") {
                 Direction::ToChip
             } else {
                 Direction::FromChip
@@ -192,8 +192,24 @@ impl Planner<'_, '_> {
                     format!("`{target}` carries bytes the other way; it cannot `{method}`"),
                 ));
             }
+            if stream.packets != method.ends_with("_packet") {
+                return Err(Error::new(
+                    expr.span,
+                    if stream.packets {
+                        "packet streams use `write_packet(bytes)` and `read_packet()`"
+                    } else {
+                        "byte streams use `write(bytes)` and `read(n)`; declare `export packets` for packet I/O"
+                    },
+                ));
+            }
             Ok(Some((json!({ "stream": target }), args)))
         } else if self.peers.contains_key(target) {
+            if method.ends_with("_packet") {
+                return Err(Error::new(
+                    expr.span,
+                    "packet methods require an exported packet stream",
+                ));
+            }
             Ok(Some((json!({ "peer": target }), args)))
         } else {
             Err(Error::new(
@@ -201,6 +217,75 @@ impl Planner<'_, '_> {
                 format!("`{target}` is not an exported stream or an attached peer"),
             ))
         }
+    }
+
+    fn packet_step(&self, expr: &Expr) -> Result<Option<Json>> {
+        if let Some((target, args)) = self.endpoint(expr, "write_packet")? {
+            let [arg] = args else {
+                return Err(Error::new(expr.span, "`write_packet` takes one byte list"));
+            };
+            if arg.name.is_some() {
+                return Err(Error::new(expr.span, "pass the byte list directly"));
+            }
+            let bytes = self.bytes(&arg.value)?;
+            if bytes.is_empty() {
+                return Err(Error::new(
+                    expr.span,
+                    "an empty packet has no byte to carry the end tag",
+                ));
+            }
+            return Ok(Some(
+                json!({"op": "write_packet", "target": target, "bytes": bytes}),
+            ));
+        }
+        if let Some((target, args)) = self.endpoint(expr, "read_packet")? {
+            if !args.is_empty() {
+                return Err(Error::new(expr.span, "`read_packet()` takes no arguments"));
+            }
+            return Ok(Some(json!({"op": "read_packet", "target": target})));
+        }
+        Ok(None)
+    }
+
+    fn packet_expected(&self, expr: &Expr) -> Result<Json> {
+        let ExprKind::Call(callee, args) = &expr.kind else {
+            return Err(Error::new(
+                expr.span,
+                "compare against `packet([bytes], error: 0)`",
+            ));
+        };
+        if !matches!(&callee.kind, ExprKind::Name(n) if n == "packet")
+            || !(1..=2).contains(&args.len())
+            || args[0].name.is_some()
+        {
+            return Err(Error::new(
+                expr.span,
+                "expected `packet([bytes], error: 0)`",
+            ));
+        }
+        let data = self.bytes(&args[0].value)?;
+        if data.is_empty() {
+            return Err(Error::new(
+                expr.span,
+                "a received packet needs at least one byte",
+            ));
+        }
+        let error = if let Some(arg) = args.get(1) {
+            if !arg.name.as_ref().is_some_and(|n| n.text == "error") {
+                return Err(Error::new(
+                    arg.value.span,
+                    "the second packet argument is `error: 0` or `error: 1`",
+                ));
+            }
+            let n = self.design.env.integer(&arg.value)?;
+            if !(0..=1).contains(&n) {
+                return Err(Error::new(arg.value.span, "packet error must be 0 or 1"));
+            }
+            n == 1
+        } else {
+            false
+        };
+        Ok(json!({"data": data, "error": error}))
     }
 
     /// A call to an exported function: its name and arguments by parameter name.
@@ -311,7 +396,9 @@ impl Planner<'_, '_> {
                 return Ok(());
             }
             StmtKind::Expr(expr) => {
-                if let Some((target, args)) = self.endpoint(expr, "write")? {
+                if let Some(step) = self.packet_step(expr)? {
+                    step
+                } else if let Some((target, args)) = self.endpoint(expr, "write")? {
                     let [arg] = args else {
                         return Err(Error::new(expr.span, "`write` takes the bytes to send"));
                     };
@@ -364,6 +451,18 @@ impl Planner<'_, '_> {
                         "expected `expect <read or call> == <bytes>`",
                     ));
                 };
+                if let Some(mut step) = self.packet_step(actual)? {
+                    if step["op"] != "read_packet" {
+                        return Err(Error::new(
+                            actual.span,
+                            "only a packet read returns a packet",
+                        ));
+                    }
+                    step["expect"] = self.packet_expected(expected)?;
+                    step["line"] = json!(line);
+                    self.steps.push(step);
+                    return Ok(());
+                }
                 let expected = self.bytes(expected)?;
                 if let Some((target, args)) = self.endpoint(actual, "read")? {
                     let [count] = args else {

@@ -42,8 +42,13 @@ pub(crate) enum Item {
     Event(Vec<Name>),
     /// `flag sending = 0, ending = 1`: controller levels, zero by default.
     Flag(Vec<(Name, Option<Expr>)>),
-    /// `export stream send: host -> sender`
-    Stream { name: Name, from: Expr, to: Expr },
+    /// `export stream send: host -> sender` or `export packets ...`
+    Stream {
+        name: Name,
+        from: Expr,
+        to: Expr,
+        packets: bool,
+    },
     /// `export fn transfer(...) -> bytes { ... }` or a private `fn`.
     Fn {
         exported: bool,

@@ -107,6 +107,9 @@ pub(crate) mod config {
     pub(crate) fn shifter(k: usize, register: u8) -> u8 {
         0x10 + 4 * k as u8 + register
     }
+    pub(crate) fn shifter_burst(k: usize) -> u8 {
+        0x32 + k as u8
+    }
     pub(crate) fn pin(p: usize) -> u8 {
         0x18 + p as u8
     }

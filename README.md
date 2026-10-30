@@ -48,3 +48,5 @@ Editor highlighting for VS Code, Vim, Neovim, Emacs, Helix and Zed: [`editors/`]
 - `sim/`: the simulator harness and built-in peers (simulated devices), embedded into the binary.
 - `examples/`: example programs, which are also the end-to-end tests.
 - `editors/`: syntax highlighting for `.spt` in common editors.
+
+Ethernet and Classical CAN language sketches and compiler/RTL gaps: [network protocol proposals](docs/proposals/network-protocols.md). These sketches are not executable examples.

@@ -9,6 +9,10 @@ pub(crate) struct Name {
 
 #[derive(Debug)]
 pub(crate) enum Item {
+    /// `contexts phase`: a level selects the active hardware configuration.
+    Contexts(Expr),
+    /// `context 1 { pin tx: out = other.out }`: override existing resources.
+    Context { index: Expr, body: Vec<Item> },
     /// `clock 50 MHz`
     Clock(Expr),
     /// `const BIT = 64 cycles`

@@ -49,6 +49,46 @@ Editor highlighting for VS Code, Vim, Neovim, Emacs, Helix and Zed: [`editors/`]
 - `examples/`: example programs, which are also the end-to-end tests.
 - `editors/`: syntax highlighting for `.spt` in common editors.
 
+## Configuration contexts
+
+`contexts <level>` selects the chip's existing two configuration banks. Shared
+pin/tile declarations initialize both banks; `context 0` and `context 1` override
+settings of those same physical resources, without allocating extra hardware:
+
+```spatial
+flag phase
+contexts phase
+pin tx: out = sender.out
+shifter sender { frame: [0, data(8), 1], idle: 1, shift: bit.tick }
+timer bit { every: 64 cycles, first: 62 cycles, pulse, run: sender.busy until sender.done }
+context 1 {
+    shifter sender { frame: [0, data(8), even, 1] }
+}
+```
+
+The selector may be a pin level, controller flag, or another fabric level. The
+hardware changes contexts together, two clocks after the selecting level
+changes. State (shifted bits, counters, timers) is shared: switching contexts
+does not reset it. Switch framing between transactions unless the protocol is
+designed for a mid-transfer change.
+
+This first version permits overrides of existing **pins, timers, shifters and
+counters**. Omitted tile fields inherit the shared declaration. Pin overrides
+specify the complete mode/source; pad assignments remain shared. CRC and byte
+tiles have no hardware context banks. Logic-cell context overrides and
+context-specific runtime writes are not exposed yet. Runtime `.set`, `.drive`
+and `.release` operations update both banks; `.drive()` restores the shared pin
+declaration in both banks.
+
+See [`examples/contexts.spt`](examples/contexts.spt) for 8N1/8E1 UART framing
+and paired pin switching. The UART test peer accepts optional `parity: "even"`
+or `parity: "odd"`; its default remains 8N1. Run:
+
+```sh
+cargo test --locked
+cargo run -q -- run --test examples/contexts.spt
+```
+
 ## Setting flags
 
 These are built-in controller operations; they need no `fn` definition:

@@ -1,0 +1,25 @@
+// TAG ends a packet after the UART wire stays quiet for fifteen bit periods.
+clock 50 MHz
+const BIT = 64 cycles
+pin tx: out = sender.out
+pin rx: in
+timer tx_bit { every: BIT, first: BIT - 2 cycles, pulse, run: sender.busy until sender.done }
+shifter sender { frame: [0, data(8), 1], idle: 1, shift: tx_bit.tick }
+timer rx_bit { every: BIT, first: BIT / 2 - 1 cycles, pulse, run: rx.fall until receiver.done }
+shifter receiver { frame: [0, data(8), 1], start: rx.fall, shift: rx_bit.tick, sample: rx at rx_bit.tick }
+
+
+reg activity = rx.rise || rx.fall
+timer gap { every: BIT * 15, pulse, run: 1, resync: activity }
+export stream send: host -> sender
+export packets recv: receiver -> host {
+    tag { end: gap.tick }
+}
+
+test "quiet gaps end variable-length packets" {
+    wire tx -> rx
+    send.write([0x00, 0xFF])
+    expect recv.read_packet() == packet([0x00, 0xFF], error: 0)
+    send.write([0x55])
+    expect recv.read_packet() == packet([0x55], error: 0)
+}

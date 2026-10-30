@@ -155,14 +155,16 @@ Shifter settings expose existing RTL register `0x32 + shifter_index`:
   required in burst mode because the hardware always observes this selector.
   For EOP-tag-only termination, supply a zero-valued `reg`.
 - `end_on_packet`: a TX FIFO byte tagged EOP also ends the burst. Requires a
-  host-to-shifter FIFO connection and is required for TX packet streams.
+  host-to-shifter FIFO connection. It is required for TX packet streams
+  without a byte-processing pipeline.
 - `abort: signal`: while asserted, drops the in-flight word without a receive
   push or word-completion event. It returns to the configured idle level; it
   does not disable the pin driver. It can also be used without burst mode.
 
 FIFO starvation also ends a transmit burst in the existing RTL; the new API
 cannot make an insufficiently fed frame continuous. The host must keep up.
-RX packet exports require burst mode and an end condition. EOP tags are local
+RX packet exports require burst mode with an end condition, or a byte pipeline
+that establishes boundaries with `tag` or `unescape`. EOP tags are local
 FIFO metadata, not a packet delimiter magically added to the external wire:
 protocol programs must implement their actual on-wire framing.
 
@@ -184,3 +186,66 @@ cargo run -q -- run --test examples/packet_errors.spt
 exercise two packet boundaries and abort/restart. `packet_errors.spt` receives
 UART frames from an independent peer, proving both clean and corrupt parity
 are reported with the correct packet metadata. No RTL changes are needed.
+
+## Byte-processing stages
+
+An exported connection can configure up to two byte stages, in the order
+bytes travel. TX runs FIFO -> stage 0 -> stage 1 -> shifter; RX runs shifter
+-> stage 0 -> stage 1 -> FIFO. Omitted stages pass bytes unchanged.
+
+```spatial
+export packets send: host -> sender {
+    checksum { algorithm: add, operation: generate }
+    escape {
+        delimiter: 0x7E, escape: 0x7D,
+        mapped_delimiter: 0x5E, mapped_escape: 0x5D,
+        prepend, append,
+    }
+}
+export packets recv: receiver -> host {
+    unescape {
+        delimiter: 0x7E, escape: 0x7D,
+        mapped_delimiter: 0x5E, mapped_escape: 0x5D,
+    }
+    checksum { algorithm: add, operation: verify }
+}
+```
+
+These are the chip's existing fixed byte tiles, configured by the compiler.
+They are also available on `export stream` connections. A transmit packet
+connection supplies EOP to the stages; a receive connection needs a burst
+shifter or a framing stage (`tag`/`unescape`). Checksum, escape and filter
+stages require upstream packet boundaries, so their order is checked.
+Byte framing allows ordinary UART shifters to carry packets without using
+burst mode; see [`examples/byte_framing.spt`](examples/byte_framing.spt).
+
+| Stage | Fields and behavior |
+| --- | --- |
+| `pass {}` | Bytes and EOP/ERR tags pass unchanged. |
+| `escape { ... }` | Required `delimiter`, `escape`, `mapped_delimiter`, `mapped_escape` bytes. The two special bytes become escape-plus-mapped-byte. `prepend` and `append` default to 1; set either to 0 to disable that delimiter. |
+| `unescape { ... }` | Same four byte fields. Delimiters terminate packets; escape codes are restored. Invalid or unfinished escapes mark a packet as erroneous. |
+| `checksum { ... }` | Required `algorithm: add` or `xor`, and `operation: generate` or `verify`. Zero-seeded 8-bit checksums; additive generation appends the two's complement of the sum, XOR appends the XOR. Verification expects the total to be zero and retains the checksum byte in the returned data. |
+| `tag { ... }` | `length: N` (0..255; zero disables length termination), `end: signal`, `error: signal`, all optional/default zero. End or length marks the last byte; an input EOP is preserved. Error is latched while collecting a packet. |
+| `filter { ... }` | Required `value` byte, optional `mask` (default 0xFF). Keep an entire packet if its first byte matches under the mask; discard the entire packet otherwise. The address byte is retained. |
+
+All byte fields are range checked. Escape and delimiter must differ; their
+replacements must be distinct and cannot equal the delimiter. There are only
+two stages in each direction per shifter, eight total, shown as `byte tiles`
+in the resource report. Stage ordering is independent in each direction.
+These settings are loaded before arming; runtime stage reconfiguration, stage
+event names and context-specific byte settings are not exposed in this slice.
+The hardware byte tiles themselves have no context banks.
+
+Checksums here are 8-bit add/XOR operations, not CRC16/CRC32. The separate
+bit-level `crc` block remains the path for those. Verification retains FCS;
+filtering retains the address; neither implicitly strips protocol fields.
+Empty delimiter-only frames produce no received packet, consistent with the
+packet API's requirement for at least one tagged byte.
+
+Examples:
+
+- [`byte_framing.spt`](examples/byte_framing.spt): framing, escaping, additive checksums, malformed escapes and bad checksums, with an independent UART peer checking raw bytes.
+- [`byte_filter.spt`](examples/byte_filter.spt): fixed-length packets and masked address filtering.
+- [`byte_tag_gap.spt`](examples/byte_tag_gap.spt): packets terminated by a quiet interval on the wire.
+- [`byte_tag_errors.spt`](examples/byte_tag_errors.spt): error tags from a fabric signal.
+- [`byte_xor.spt`](examples/byte_xor.spt): XOR generation/verification and explicit pass-through.

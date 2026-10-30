@@ -17,6 +17,8 @@ pub(crate) const FLAGS: usize = 2;
 pub(crate) const CRCS: usize = 1;
 /// Widest CRC register.
 pub(crate) const MAX_CRC_BITS: i128 = 32;
+pub(crate) const BYTE_STAGES: usize = 2;
+pub(crate) const BYTE_TILES: usize = 8;
 pub(crate) const SRAM_BYTES: usize = 1024;
 /// Shifter word length range.
 pub(crate) const MAX_WORD_BITS: i128 = 16;
@@ -118,6 +120,9 @@ pub(crate) mod config {
     }
     pub(crate) fn logic(k: usize, register: u8) -> u8 {
         0x40 + 4 * k as u8 + register
+    }
+    pub(crate) fn byte_tile(tile: usize, register: u8) -> u8 {
+        0x60 + 4 * tile as u8 + register
     }
     pub(crate) fn crc(register: u8) -> u8 {
         0x28 + register

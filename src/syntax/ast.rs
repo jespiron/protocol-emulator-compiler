@@ -58,8 +58,12 @@ pub(crate) enum Item {
         returns: Option<Type>,
         body: Vec<Stmt>,
     },
-    /// `test "loopback" { ... }`
-    Test { name: Name, body: Vec<Stmt> },
+    /// `test "loopback" [step_timeout duration] { ... }`
+    Test {
+        name: Name,
+        body: Vec<Stmt>,
+        step_timeout: Option<Expr>,
+    },
     /// `always "cs idles high" { expr }`
     Always { name: Name, condition: Expr },
 }

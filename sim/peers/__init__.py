@@ -7,11 +7,14 @@ breaks the protocol's rules, not only when the data is wrong.
 A peer class takes (bus, dut, name, **args) and provides:
   tasks()       coroutines that watch and drive its pins, run for the test
   write(data)   queue bytes for the peer to send to the chip
+  finish()      optional end-of-test observation checks
   received      bytes it has received from the chip, oldest first
   problems      rules the chip broke, as messages
 """
 
 import inspect
+
+from peers.ethernet import EthernetLink
 
 from peers.ps2 import Ps2Keyboard
 
@@ -24,7 +27,7 @@ from peers.spi import SpiDevice
 from peers.uart import UartDevice
 from peers.usb import UsbHost
 
-KINDS = {"ps2_keyboard": Ps2Keyboard, "swd_target": SwdTarget, "jtag_tap": JtagTap, "i2c_target": I2cTarget, "spi_device": SpiDevice, "uart_device": UartDevice, "usb_host": UsbHost}
+KINDS = {"ethernet_link": EthernetLink, "ps2_keyboard": Ps2Keyboard, "swd_target": SwdTarget, "jtag_tap": JtagTap, "i2c_target": I2cTarget, "spi_device": SpiDevice, "uart_device": UartDevice, "usb_host": UsbHost}
 
 
 def attach(spec, bus, dut):

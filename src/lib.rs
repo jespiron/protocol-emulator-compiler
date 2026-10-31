@@ -62,7 +62,7 @@ pub fn compile(source: &str) -> Result<Build, Error> {
         tests: design
             .tests
             .iter()
-            .map(|(name, _)| name.text.clone())
+            .map(|(name, _, _)| name.text.clone())
             .collect(),
         usage: design.usage,
         pins: design.pins,

@@ -1,0 +1,19 @@
+// The controller feeds a constant SRAM table into the UART's TX FIFO.
+clock 50 MHz
+const DATA = [0x00, 0xFF, 0x55, 0xA5, 0x01, 0x02, 0x03, 0x04]
+pin tx: out = sender.out
+pin unused_rx: in
+timer bit { every: 64 cycles, first: 62 cycles, pulse, run: sender.busy until sender.done }
+shifter sender { frame: [0, data(8), 1], idle: 1, shift: bit.tick }
+export fn send() { sender.send(DATA) }
+export fn send_again() { sender.send(DATA) }
+export fn single() { sender.send([0xA5]) }
+test "stored bytes stream through FIFO backpressure and can be replayed" {
+    attach uart_device(from_chip: tx, to_chip: unused_rx, bit: 64 cycles) as terminal
+    send()
+    expect terminal.read(len(DATA)) == DATA
+    send_again()
+    expect terminal.read(len(DATA)) == DATA
+    single()
+    expect terminal.read(1) == [0xA5]
+}

@@ -309,10 +309,19 @@ impl Parser {
             }
             "export" if self.eat("fn") => self.function(true)?,
             "fn" => self.function(false)?,
-            "test" => Item::Test {
-                name: self.string()?,
-                body: self.block()?,
-            },
+            "test" => {
+                let name = self.string()?;
+                let step_timeout = if self.eat("step_timeout") {
+                    Some(self.expr()?)
+                } else {
+                    None
+                };
+                Item::Test {
+                    name,
+                    step_timeout,
+                    body: self.block()?,
+                }
+            }
             "always" => {
                 let name = self.string()?;
                 self.expect("{")?;

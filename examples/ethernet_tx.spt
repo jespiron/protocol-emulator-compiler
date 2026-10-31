@@ -1,0 +1,76 @@
+// Stored-frame 10BASE-T transmitter, 40 MHz / 4 cycles per 10 Mb/s bit.
+// Digital waveforms only; external line driver/magnetics are required.
+clock 40 MHz
+const NLP_TICK = 64000 cycles
+const FRAME = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x02, 0x12, 0x34, 0x56, 0x78, 0x9A, 0x08, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D]
+const WIRE_FRAME = [0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0x55, 0xD5, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x02, 0x12, 0x34, 0x56, 0x78, 0x9A, 0x08, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D]
+
+flag sending = 0
+event begin_frame, link_pulse
+
+timer half_bit { every: 2 cycles, idle: 1, run: 1 }
+shifter bits { shift: half_bit.fall, start: half_bit.fall }
+counter words { count: bits.word, limit: 8, clear: begin_frame }
+counter fcs_bits { count: half_bit.fall, streak: ones(emitting), limit: 32, clear: begin_frame }
+crc fcs {
+    width: 32, poly: 0x04C11DB7, check: 0xC704DD7B,
+    absorb: half_bit.fall, data: bits.out, absorb_while: absorbing,
+    emit: half_bit.fall, emit_while: emitting, restart: begin_frame,
+}
+reg manchester = (if bits.busy { bits.out } else { fcs.out }) == delayed_half
+reg window = bits.busy || (words.at_least && !fcs_bits.at_least)
+reg absorbing = bits.busy && words.at_least
+reg emitting = !bits.busy && words.at_least
+reg delayed_half = half_bit.out
+reg idle_done = (idle_done || tail.fall) && !begin_frame
+reg positive = if window { manchester } else { fcs_bits.at_least && !idle_done }
+reg negative = window && !manchester
+
+// Two registered fabric/pin cycles add to the timer: 10 + 2 = 12 clocks (300 ns).
+timer tail { every: 10 cycles, first: 1 cycle, run: fcs_bits.at_least until idle_done }
+timer cadence { every: NLP_TICK, pulse, run: 1 }
+timer pulse { every: 4 cycles, first: 1 cycle, idle: 0, run: link_pulse until pulse.fall }
+contexts(sending) {
+    context 0 {
+        pin td_p: out = pulse.out
+        pin td_n: out = 0
+    }
+    context 1 {
+        pin td_p: out = positive
+        pin td_n: out = negative
+    }
+}
+
+// One real-time link session: three pulses 16 ms apart, frame after pulse 2.
+// Reset while the link context is active before switching the paired pins.
+export fn transmit() {
+    clear_flags()
+    repeat 10 { wait next cadence.tick }
+    fire link_pulse
+    wait pulse.fall
+    repeat 10 { wait next cadence.tick }
+    fire link_pulse
+    wait pulse.fall
+    fire begin_frame
+    set_flags(sending)
+    bits.send(WIRE_FRAME)
+    wait idle_done
+    clear_flags()
+    repeat 10 { wait next cadence.tick }
+    fire link_pulse
+    wait pulse.fall
+}
+
+test "real-time link pulses and a stored frame" step_timeout 60 ms {
+    attach ethernet_link(positive: td_p, negative: td_n, frames: 1, pulses: 3) as link
+    transmit()
+    expect link.read(len(FRAME)) == FRAME
+}
+
+test "repeated sessions restart CRC and framing" step_timeout 60 ms {
+    attach ethernet_link(positive: td_p, negative: td_n, frames: 2, pulses: 6) as link
+    transmit()
+    expect link.read(len(FRAME)) == FRAME
+    transmit()
+    expect link.read(len(FRAME)) == FRAME
+}

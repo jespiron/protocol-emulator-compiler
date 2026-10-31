@@ -99,14 +99,14 @@ class Host:
             pass
 
 
-async def wait_for(dut, ready, describe, check):
-    """Wait until `ready()` is true, or fail after STEP_TIMEOUT_CYCLES."""
-    for _ in range(STEP_TIMEOUT_CYCLES // 16):
+async def wait_for(dut, ready, describe, check, timeout_cycles=STEP_TIMEOUT_CYCLES):
+    """Wait until ready, checking the configured budget in 16-cycle increments."""
+    for _ in range((timeout_cycles + 15) // 16):
         check()
         if ready():
             return
         await ClockCycles(dut.clk, 16)
-    raise Failure(f"{describe()} after {STEP_TIMEOUT_CYCLES} cycles")
+    raise Failure(f"{describe()} after {timeout_cycles} cycles")
 
 
 def host_value(expr, args, elements):
@@ -143,7 +143,7 @@ def call_bytes(sends, args, elements=None):
     return out
 
 
-async def call(dut, host, calls, step, check):
+async def call(dut, host, calls, step, check, timeout_cycles=STEP_TIMEOUT_CYCLES):
     """Call an exported function; return (result bytes, fail message or None)."""
     name = step["function"]
     function = calls["functions"][name]
@@ -162,7 +162,7 @@ async def call(dut, host, calls, step, check):
         dut,
         lambda: any(eop for _, eop, _ in replies),
         lambda: f"`{name}` got no answer (replies so far: {fmt(b for b, _, _ in replies)})",
-        check,
+        check, timeout_cycles,
     )
     end = next(i for i, (_, eop, _) in enumerate(replies) if eop)
     answer = [b for b, _, _ in replies[:end]]
@@ -223,8 +223,9 @@ class Invariants:
 class Session:
     """A chip, its wires, its peers and the host, from reset onward."""
 
-    def __init__(self, dut, plan, period_ps):
+    def __init__(self, dut, plan, period_ps, timeout_cycles=STEP_TIMEOUT_CYCLES):
         self.dut, self.plan, self.period_ps = dut, plan, period_ps
+        self.timeout_cycles = timeout_cycles
         self.calls = plan["calls"]
         channels = {s["channel"] for s in plan["streams"].values() if s["direction"] == "from_chip"}
         if self.calls["channel"] is not None:
@@ -282,7 +283,7 @@ class Session:
             name = target["stream"]
             buffer = host.received[plan["streams"][name]["channel"]]
             await wait_for(dut, lambda: any(eop for _, eop, _ in buffer),
-                           lambda: f"`{name}` has {len(buffer)} bytes but no packet end", self.check)
+                           lambda: f"`{name}` has {len(buffer)} bytes but no packet end", self.check, self.timeout_cycles)
             end = next(i + 1 for i, (_, eop, _) in enumerate(buffer) if eop)
             entries = buffer[:end]
             del buffer[:end]
@@ -300,11 +301,11 @@ class Session:
             else:
                 buffer = host.received[plan["streams"][name]["channel"]]
                 values = lambda: [b for b, _, _ in buffer]
-            await wait_for(dut, lambda: len(buffer) >= count, lambda: f"`{name}` received {fmt(values())}, then nothing", self.check)
+            await wait_for(dut, lambda: len(buffer) >= count, lambda: f"`{name}` received {fmt(values())}, then nothing", self.check, self.timeout_cycles)
             output = values()[:count]
             del buffer[:count]
         elif step["op"] == "call":
-            output, failed = await call(dut, host, self.calls, step, self.check)
+            output, failed = await call(dut, host, self.calls, step, self.check, self.timeout_cycles)
             if "fails" in step and failed != step["fails"]:
                 outcome = f'failed with "{failed}"' if failed else "succeeded"
                 raise Failure(f"expected `{step['function']}` to fail with \"{step['fails']}\", but it {outcome}")
@@ -319,13 +320,20 @@ class Session:
             return None
         return output
 
+    def finish(self):
+        for peer in self.peers.values():
+            finish = getattr(peer, "finish", None)
+            if finish is not None:
+                finish()
+        self.check()
+
     def stop(self):
         for task in self.tasks:
             task.cancel()
 
 
 async def run_test(dut, plan, test, period_ps):
-    session = Session(dut, plan, period_ps)
+    session = Session(dut, plan, period_ps, test.get("step_timeout_cycles") or STEP_TIMEOUT_CYCLES)
     await session.start()
     error = session.connect(test["wires"], test["peers"])
     if error:
@@ -337,6 +345,7 @@ async def run_test(dut, plan, test, period_ps):
         for step in test["steps"]:
             line = step["line"]
             await session.step(step)
+        session.finish()
         error = None
     except Failure as failure:
         error = {"line": line, "message": str(failure)}

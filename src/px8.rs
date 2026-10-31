@@ -46,6 +46,7 @@ pub(crate) struct Assembler {
     labels: Vec<Option<usize>>,
     fixups: Vec<(usize, u8, Target)>,
     pending: Vec<(u8, u16)>,
+    byte_tables: std::collections::BTreeMap<Vec<u8>, usize>,
     /// Inside a `DJNZ` loop, block loads would clobber the loop counter `C`.
     pub(crate) keep_counter: bool,
 }
@@ -179,6 +180,27 @@ impl Assembler {
         let idle = self.label();
         self.place(idle);
         self.jump(idle);
+    }
+
+    /// Point P at an interned constant byte table in SRAM.
+    pub(crate) fn static_data(&mut self, bytes: &[u8]) {
+        self.flush();
+        let offset = *self.byte_tables.entry(bytes.to_vec()).or_insert_with(|| {
+            let at = self.data.len();
+            self.data.extend_from_slice(bytes);
+            at
+        });
+        self.fixed(SETP, Target::Data(offset));
+    }
+
+    /// A = SRAM[P++].
+    pub(crate) fn load_memory(&mut self) {
+        self.emit(OPR, 8);
+    }
+
+    /// Queue A in the shifter TX FIFO; stall on backpressure.
+    pub(crate) fn transmit(&mut self, channel: usize, eop: bool) {
+        self.emit(OPR, (channel as u16) << 4 | u16::from(eop) << 5 | 7);
     }
 
     /// Lay out code then data, resolving every target.

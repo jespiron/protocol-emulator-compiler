@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 pub(crate) fn plan(design: &Design<'_>, source: &str) -> Result<Json> {
     let line_of = |span: Span| source[..span.start.min(source.len())].matches('\n').count() + 1;
     let mut tests = Vec::new();
-    for (name, body) in &design.tests {
+    for (name, body, step_timeout) in &design.tests {
         let mut planner = Planner {
             design,
             peers: BTreeMap::new(),
@@ -23,7 +23,20 @@ pub(crate) fn plan(design: &Design<'_>, source: &str) -> Result<Json> {
         for stmt in *body {
             planner.stmt(stmt, line_of(stmt.span))?;
         }
+        let timeout = step_timeout
+            .map(|expr| {
+                let cycles = design.env.cycles(expr, "step_timeout", false)?;
+                if !(1..=40_000_000).contains(&cycles) {
+                    return Err(Error::new(
+                        expr.span,
+                        "step_timeout must be 1..40000000 clock cycles",
+                    ));
+                }
+                Ok(cycles)
+            })
+            .transpose()?;
         tests.push(json!({
+            "step_timeout_cycles": timeout,
             "name": name.text,
             "line": line_of(name.span),
             "wires": planner.wires,

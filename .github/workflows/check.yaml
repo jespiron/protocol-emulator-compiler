@@ -23,6 +23,7 @@ jobs:
         run: |
           cargo build --locked
           for example in examples/*.spt; do target/debug/spatial run --test "$example"; done
+          python3 tests/ethernet_cases.py target/debug/spatial
       - name: A new project works from an installed binary
         run: |
           cargo install --locked --path . --root /tmp/spatial

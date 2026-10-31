@@ -106,7 +106,7 @@ pub(crate) struct Design<'a> {
     pub streams: BTreeMap<String, Stream>,
     pub exports: Exports,
     pub usage: Vec<(&'static str, usize, usize)>,
-    pub tests: Vec<(&'a Name, &'a [Stmt])>,
+    pub tests: Vec<(&'a Name, &'a [Stmt], Option<&'a Expr>)>,
     pub invariants: Vec<(&'a Name, &'a Expr)>,
 }
 
@@ -221,7 +221,11 @@ pub(crate) fn elaborate(items: &[Item]) -> Result<Design<'_>> {
                 }
             }
             Item::Stream { name, .. } | Item::Fn { name, .. } => declare(name, None, &mut chip)?,
-            Item::Test { name, body } => tests.push((name, body.as_slice())),
+            Item::Test {
+                name,
+                body,
+                step_timeout,
+            } => tests.push((name, body.as_slice(), step_timeout.as_ref())),
             Item::Always { name, condition } => invariants.push((name, condition)),
         }
     }

@@ -165,6 +165,44 @@ pub(crate) fn claim_fifos(chip: &mut Chip<'_>, functions: &[&Item]) -> Result<()
             chip.claim(k, direction, via.span)?;
         }
     }
+    fn static_senders(
+        chip: &Chip<'_>,
+        body: &[Stmt],
+        found: &mut std::collections::BTreeMap<usize, crate::Span>,
+    ) -> Result<()> {
+        for stmt in body {
+            match &stmt.kind {
+                StmtKind::Expr(Expr {
+                    kind: ExprKind::Call(callee, _),
+                    ..
+                }) => {
+                    if let ExprKind::Field(object, method) = &callee.kind
+                        && method.text == "send"
+                    {
+                        found.insert(chip.shifter_index(object)?, stmt.span);
+                    }
+                }
+                StmtKind::Repeat { body, .. } | StmtKind::For { body, .. } => {
+                    static_senders(chip, body, found)?
+                }
+                StmtKind::If {
+                    then, otherwise, ..
+                } => {
+                    static_senders(chip, then, found)?;
+                    static_senders(chip, otherwise, found)?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    let mut senders = std::collections::BTreeMap::new();
+    for item in functions {
+        static_senders(chip, function_parts(item).4, &mut senders)?;
+    }
+    for (k, span) in senders {
+        chip.claim(k, Direction::ToChip, span)?;
+    }
     Ok(())
 }
 
@@ -740,6 +778,58 @@ impl Lowering<'_, '_> {
                 kind: ExprKind::Call(callee, args),
                 span,
             }) => match &callee.kind {
+                ExprKind::Field(object, method) if method.text == "send" => {
+                    let k = self.chip.shifter_index(object)?;
+                    let [arg] = args.as_slice() else {
+                        return Err(Error::new(*span, "`.send` takes one constant byte list"));
+                    };
+                    if arg.name.is_some() {
+                        return Err(Error::new(*span, "pass the constant byte list directly"));
+                    }
+                    let value = self.env(scope).eval(&arg.value).map_err(|_| Error::new(arg.value.span,
+                        "`.send` needs compile-time bytes stored in SRAM; host-supplied bytes use a `bytes via` parameter"))?;
+                    let bytes = match value {
+                        Value::Str(s) => s.into_bytes(),
+                        Value::List(items) => items
+                            .into_iter()
+                            .map(|item| match item {
+                                Value::Number(n) => {
+                                    n.whole().and_then(|v| u8::try_from(v).ok()).ok_or_else(|| {
+                                        Error::new(
+                                            arg.value.span,
+                                            "every stored byte must be in 0..255",
+                                        )
+                                    })
+                                }
+                                _ => Err(Error::new(
+                                    arg.value.span,
+                                    "every stored byte must be a number",
+                                )),
+                            })
+                            .collect::<Result<Vec<_>>>()?,
+                        _ => {
+                            return Err(Error::new(
+                                arg.value.span,
+                                "`.send` needs a constant byte list or string",
+                            ));
+                        }
+                    };
+                    if bytes.is_empty() || bytes.len() > crate::hardware::SRAM_BYTES {
+                        return Err(Error::new(
+                            arg.value.span,
+                            "stored transfers need 1..1024 bytes and must fit alongside code/configuration",
+                        ));
+                    }
+                    self.asm.static_data(&bytes);
+                    self.asm.load((bytes.len() - 1) as u16);
+                    self.counted_loop(*span, |l| {
+                        l.asm.load_memory();
+                        l.asm.transmit(k, false);
+                        Ok(())
+                    })?;
+                    self.asm.load_memory();
+                    self.asm.transmit(k, true);
+                }
                 ExprKind::Field(object, method) if method.text == "load" => {
                     let k = self.chip.shifter_index(object)?;
                     let [arg] = args.as_slice() else {

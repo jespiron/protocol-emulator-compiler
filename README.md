@@ -249,3 +249,88 @@ Examples:
 - [`byte_tag_gap.spt`](examples/byte_tag_gap.spt): packets terminated by a quiet interval on the wire.
 - [`byte_tag_errors.spt`](examples/byte_tag_errors.spt): error tags from a fabric signal.
 - [`byte_xor.spt`](examples/byte_xor.spt): XOR generation/verification and explicit pass-through.
+
+## Stored-byte transfers and Ethernet transmit
+
+`shifter.send(CONSTANT_BYTES)` is a controller operation. It stores a constant
+byte list/string in the shared SRAM and streams it through the shifter's TX
+FIFO using existing PX8 instructions. Identical byte tables are shared across
+calls. The last byte is tagged EOP. It returns after enqueueing all bytes;
+wait for the relevant shifter/protocol completion event before assuming the
+wire is idle. It does not add framing or an inter-packet gap.
+
+```spatial
+const DATA = [0x00, 0xFF, 0x55, 0xA5]
+export fn transmit_stored() {
+    sender.send(DATA)
+    wait sender.done
+}
+```
+
+The operation claims that TX FIFO; it cannot share ownership with a host
+stream or `bytes via` parameter. It uses the controller's loop counter and
+data pointer, so it cannot be nested inside a runtime-counted loop. Transfer
+bytes, instructions and configuration tables must fit together in 1 KB.
+Runtime host data continues to use `bytes via`; `.load` remains the separate
+operation for loading a manual shifter word. See
+[`stored_bytes.spt`](examples/stored_bytes.spt) for a UART replay test with FIFO
+backpressure and a one-byte transfer.
+
+[`ethernet_tx.spt`](examples/ethernet_tx.spt) ports the existing digital
+10BASE-T transmit demo to Spatial. Its `transmit()` function sends a stored
+60-byte Ethernet frame (header and payload), with preamble/SFD and hardware
+CRC32, between three 100 ns link pulses spaced exactly 16 ms apart. The core
+clock is 40 MHz, with 2 clocks per Manchester half-bit. The final TP_IDL high
+is 300 ns. The program fits in 433 SRAM bytes and uses all four timers, both
+counters, all eight logic cells and the CRC; it has no receive implementation.
+
+Context 0 connects the paired pins to the link-pulse path; context 1 connects
+them to the frame encoder. Datapath state is reset while context 0 is still
+active before switching to frame output, so a repeated call cannot expose a
+stale CRC/tail state. The frame bytes come from SRAM rather than relying on
+host service latency during the frame. `FRAME` is the expected header/payload;
+`WIRE_FRAME` stores preamble/SFD plus those bytes, excluding FCS. Edit both and
+recompile to change the stored frame. The compiler checks SRAM capacity.
+
+This is a finite link-session demonstration, not an always-running link/MAC:
+link pulses stop after the call returns. It does not implement receive,
+collision handling, autonegotiation, arbitrary runtime frame loading or analog
+drive circuitry. TD+ / TD- are digital `uio0` / `uio1`; external line drivers
+and magnetics are required. The independent `ethernet_link` peer checks digital
+Manchester cells, exact preamble, FCS against `zlib.crc32`, idle tail, pulse
+width/spacing, expected frame/pulse counts, and the 40 MHz clock. Its optional
+`pulse_period` argument permits explicitly accelerated pulse-gap tests; the
+example uses the fixed real-time default of 640000 clocks (16 ms).
+
+Long protocol tests can specify a per-blocking-step simulation budget:
+
+```spatial
+test "link session" step_timeout 60 ms {
+    // attach the peer, call transmit(), and check its decoded bytes
+}
+```
+
+The default remains 200000 clocks. The explicit budget must be between 1 and
+40000000 clocks; it applies to blocking calls/reads, not total test duration
+or wall time. Simulation polls these deadlines in 16-clock increments. A peer
+may provide an optional `finish()` hook for end-of-test observation checks,
+used here to reject missing pulses/frames.
+
+```sh
+cargo run -q -- run --test examples/stored_bytes.spt
+cargo run -q -- run --test examples/ethernet_tx.spt
+```
+
+The real-time Ethernet tests simulate about 144 ms total and can take several
+minutes. They cover one session, then two consecutive sessions to check reset
+and replay behavior. Electrical interoperability remains unmeasured.
+
+Additional Ethernet data/error cases (accelerated pulse gaps, real 10 Mb/s
+bits) also run in CI:
+
+```sh
+python3 tests/ethernet_cases.py target/debug/spatial
+```
+
+They cover zero/one/alternating payloads and a seeded 400-byte payload, plus
+wrong CRC polynomial, missing link pulses and wrong core clock.
